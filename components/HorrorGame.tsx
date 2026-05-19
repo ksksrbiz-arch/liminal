@@ -6,6 +6,7 @@ import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockCont
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { auth, db } from '../lib/firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
@@ -21,7 +22,7 @@ const POSSIBLE_NOTES = [
 ];
 
 export type InteractableItem = {
-    type: 'note' | 'artifact' | 'pipe' | 'switch' | 'phone' | 'cabinet';
+    type: 'note' | 'artifact' | 'pipe' | 'switch' | 'phone' | 'cabinet' | 'save_point';
     id: string;
     message: string;
     name?: string;
@@ -63,9 +64,13 @@ export default function HorrorGame() {
   const centerPoint = new THREE.Vector2(0, 0);
   const [user, setUser] = useState<any>(null); // simple state for UI
   const userRef = useRef<any>(null);
+  const startPosRef = useRef<{x: number, z: number} | null>(null);
   const [loadingLogin, setLoadingLogin] = useState(false);
   const controlsRef = useRef<PointerLockControls | null>(null);
   const [savedNotes, setSavedNotes] = useState<string[]>([]);
+  const unsavedNotesRef = useRef<string[]>([]); // Items waiting to be saved
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [pauseText, setPauseText] = useState("PAUSED");
   const [showNotesMenu, setShowNotesMenu] = useState(false);
   const envStatesRef = useRef<Record<string, any>>({});
   const paranoiaRef = useRef(0);
@@ -159,7 +164,11 @@ export default function HorrorGame() {
                const saveRef = doc(db, 'users', u.uid, 'save', 'data');
                const docSnap = await getDoc(saveRef);
                if (docSnap.exists()) {
-                   setSavedNotes(docSnap.data().notesFound || []);
+                   const data = docSnap.data();
+                   setSavedNotes(data.notesFound || []);
+                   if (data.spawnX !== undefined && data.spawnZ !== undefined) {
+                       startPosRef.current = { x: data.spawnX, z: data.spawnZ };
+                   }
                }
            } catch (e) {
                console.error("Failed to load progress:", e);
@@ -183,33 +192,52 @@ export default function HorrorGame() {
       }
   };
 
-  const saveNoteFound = async (noteId: string) => {
+  const collectItemLocally = (noteId: string) => {
       setSavedNotes(prev => {
           if (!prev.includes(noteId)) {
+              if (!unsavedNotesRef.current.includes(noteId)) {
+                  unsavedNotesRef.current.push(noteId);
+              }
               return [...prev, noteId];
           }
           return prev;
       });
+  };
 
+  const saveGameAtCheckpoint = async () => {
       const currentUser = userRef.current;
-      if (!currentUser) return;
+      if (!currentUser || !controlsRef.current) return;
+      
+      const pos = controlsRef.current.object.position;
+      setSaveMessage("SAVING PROGRESS...");
+      
       try {
           const saveRef = doc(db, 'users', currentUser.uid, 'save', 'data');
           const docSnap = await getDoc(saveRef);
+          
           if (!docSnap.exists()) {
               await setDoc(saveRef, {
-                  notesFound: [noteId],
+                  notesFound: unsavedNotesRef.current,
+                  spawnX: pos.x,
+                  spawnZ: pos.z,
                   updatedAt: new Date().toISOString()
               });
           } else {
               await updateDoc(saveRef, {
-                  notesFound: arrayUnion(noteId),
+                  notesFound: arrayUnion(...unsavedNotesRef.current),
+                  spawnX: pos.x,
+                  spawnZ: pos.z,
                   updatedAt: new Date().toISOString()
               });
           }
+          unsavedNotesRef.current = [];
+          setSaveMessage("DATABANK SECURED");
       } catch (e) {
           console.error("Failed to save progress", e);
+          setSaveMessage("SAVE FAILED. SIGNAL LOST.");
       }
+      
+      setTimeout(() => setSaveMessage(null), 3000);
   };
 
   useEffect(() => {
@@ -233,14 +261,26 @@ export default function HorrorGame() {
 
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.y = 1.4; 
-    camera.position.x = 2.5; // starting cell (1 * unit)
-    camera.position.z = 2.5;
+    
+    if (startPosRef.current) {
+        camera.position.x = startPosRef.current.x;
+        camera.position.z = startPosRef.current.z;
+    } else {
+        camera.position.x = 2.5; // starting cell (1 * unit)
+        camera.position.z = 2.5;
+    }
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    const isDeviceMobile = typeof window !== 'undefined' ? (window.innerWidth < 768 || 'ontouchstart' in window) : false;
+    
+    const renderer = new THREE.WebGLRenderer({ 
+        antialias: !isDeviceMobile, 
+        powerPreference: "high-performance",
+        precision: isDeviceMobile ? "mediump" : "highp"
+    });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); 
+    renderer.setPixelRatio(isDeviceMobile ? 1.0 : Math.min(window.devicePixelRatio, 1.5)); 
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.type = isDeviceMobile ? THREE.BasicShadowMap : THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.2; // increased exposure slightly
     mountRef.current.appendChild(renderer.domElement);
@@ -251,6 +291,9 @@ export default function HorrorGame() {
     composer.addPass(renderPass);
 
     const DreadShader = {
+        defines: {
+            "MOBILE": isDeviceMobile ? 1 : 0
+        },
         uniforms: {
             "tDiffuse": { value: null },
             "time": { value: 0.0 },
@@ -279,19 +322,30 @@ export default function HorrorGame() {
             void main() {
                 vec2 uv = vUv;
                 
-                // 1. Proximity-Based Screen Distortion (Heat-haze ripple)
+                #if MOBILE == 1
+                
+                // Fast path for mobile: bypass complex UV distortion & chromatic aberration
+                vec4 finalColor = texture2D(tDiffuse, uv);
+                
+                // Single-pass color blend for vignette
+                float dist = distance(vUv, vec2(0.5));
+                float pulse = sin(time * 6.0) * 0.5 + 0.5;
+                float vignette = smoothstep(0.8, 0.3 + (pulse * 0.1 * distortionIntensity), dist * (1.0 + distortionIntensity * 0.5));
+                finalColor.rgb *= vignette;
+                
+                #else
+                
+                // On mobile, bypass screen distortion completely to save ops
                 if (distortionIntensity > 0.01) {
                     float ripple = sin(uv.y * 20.0 + time * 5.0) * 0.005 * distortionIntensity;
                     uv.x += ripple;
                 }
                 
                 // 2. Dynamic Chromatic Aberration
-                // Splitting R and B channels proportional to stalker proximity
                 float caOffset = 0.005 * distortionIntensity; 
                 if (flickerState > 0.5) { // Flashlight glitch spike
                      caOffset += (random(uv + time) * 0.02);
                 }
-
                 vec2 uvR = uv + vec2(caOffset, 0.0);
                 vec2 uvB = uv - vec2(caOffset, 0.0);
 
@@ -300,15 +354,22 @@ export default function HorrorGame() {
                 vec4 colorB = texture2D(tDiffuse, uvB);
 
                 vec4 finalColor = vec4(colorR.r, colorG.g, colorB.b, 1.0);
+                
+                // Scanlines on desktop only
+                if (mod(gl_FragCoord.y, 4.0) < 1.0) {
+                     finalColor.rgb *= 0.90; 
+                }
 
                 // 3. Vignette Pulse 
                 // Heartbeat driven vignette bounding the edges
-                float dist = distance(uv, vec2(0.5));
+                float dist = distance(vUv, vec2(0.5)); // use original UV
                 float pulse = sin(time * 6.0) * 0.5 + 0.5; // Heartbeat-esque pulse rate
                 // Base vignette + extra darkness scaling with distortion and heartbeat pulse
                 float vignette = smoothstep(0.8, 0.3 + (pulse * 0.1 * distortionIntensity), dist * (1.0 + distortionIntensity * 0.5));
                 
                 finalColor.rgb *= vignette;
+                
+                #endif
 
                 gl_FragColor = finalColor;
             }
@@ -318,12 +379,24 @@ export default function HorrorGame() {
     const dreadPass = new ShaderPass(DreadShader);
     composer.addPass(dreadPass);
 
+    let fxaaPass: ShaderPass | null = null;
+    if (isDeviceMobile && FXAAShader) {
+        fxaaPass = new ShaderPass(FXAAShader);
+        const pixelRatio = renderer.getPixelRatio();
+        fxaaPass.material.uniforms['resolution'].value.x = 1 / (window.innerWidth * pixelRatio);
+        fxaaPass.material.uniforms['resolution'].value.y = 1 / (window.innerHeight * pixelRatio);
+        composer.addPass(fxaaPass);
+    }
+
     // --- Controls ---
     const controls = new PointerLockControls(camera, document.body);
     controlsRef.current = controls;
 
     controls.addEventListener('lock', () => setIsLocked(true));
-    controls.addEventListener('unlock', () => setIsLocked(false));
+    controls.addEventListener('unlock', () => { 
+        setIsLocked(false);
+        setPauseText(paranoiaRef.current > 0.8 ? "IT IS RIGHT BEHIND YOU" : paranoiaRef.current > 0.5 ? "UNSAFE" : "PAUSED");
+    });
 
     // --- Phantom Hallucination Mesh ---
     const phantomGeo = new THREE.CylinderGeometry(0.3, 0.3, 2.2, 8);
@@ -348,8 +421,8 @@ export default function HorrorGame() {
     flashLight.decay = 2; // more realistic distance decay
     flashLight.distance = 40;
     flashLight.castShadow = true;
-    flashLight.shadow.mapSize.width = 1024;
-    flashLight.shadow.mapSize.height = 1024;
+    flashLight.shadow.mapSize.width = isDeviceMobile ? 512 : 1024;
+    flashLight.shadow.mapSize.height = isDeviceMobile ? 512 : 1024;
     flashLight.shadow.bias = -0.001;
 
     camera.add(flashLight);
@@ -593,6 +666,10 @@ export default function HorrorGame() {
         normalTex.magFilter = THREE.NearestFilter;
         normalTex.minFilter = THREE.NearestFilter;
         
+        if (isDeviceMobile) {
+            normalTex.generateMipmaps = false;
+        }
+
         diffuseTex.wrapS = roughTex.wrapS = normalTex.wrapS = THREE.RepeatWrapping;
         diffuseTex.wrapT = roughTex.wrapT = normalTex.wrapT = THREE.RepeatWrapping;
         
@@ -612,7 +689,132 @@ export default function HorrorGame() {
         return { diffuseTex, roughTex, normalTex };
     };
 
-    const advancedWall = createAdvancedWallTextures();
+    const createAdvancedFractalNoise = (size: number, { octaves = 4, persistence = 0.5 } = {}) => {
+        const data = new Float32Array(size * size);
+        const random = (x: number, y: number) => {
+            return Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453 % 1);
+        };
+        const smoothNoise = (x: number, y: number) => {
+            const fractX = x - Math.trunc(x);
+            const fractY = y - Math.trunc(y);
+            const x1 = Math.trunc(x);
+            const y1 = Math.trunc(y);
+            const x2 = x1 + 1;
+            const y2 = y1 + 1;
+            const v1 = random(x1, y1), v2 = random(x2, y1), v3 = random(x1, y2), v4 = random(x2, y2);
+            const fX = fractX * fractX * (3.0 - 2.0 * fractX);
+            const fY = fractY * fractY * (3.0 - 2.0 * fractY);
+            return (v1 * (1 - fX) + v2 * fX) * (1 - fY) + (v3 * (1 - fX) + v4 * fX) * fY;
+        };
+
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                let total = 0;
+                let frequency = 1;
+                let amplitude = 1;
+                let maxValue = 0; 
+                for (let i = 0; i < octaves; i++) {
+                    total += smoothNoise((x * frequency) / 32, (y * frequency) / 32) * amplitude;
+                    maxValue += amplitude;
+                    amplitude *= persistence;
+                    frequency *= 2;
+                }
+                data[y * size + x] = total / maxValue;
+            }
+        }
+        return data;
+    };
+
+    const generateCrumblingConcreteTexture = (size = 1024) => {
+        const resolution = size;
+        const canvasDiffuse = document.createElement('canvas');
+        const canvasRough = document.createElement('canvas');
+        const canvasNormal = document.createElement('canvas');
+        canvasDiffuse.width = canvasRough.width = canvasNormal.width = resolution;
+        canvasDiffuse.height = canvasRough.height = canvasNormal.height = resolution;
+        
+        const ctxDiffuse = canvasDiffuse.getContext('2d')!;
+        const ctxRough = canvasRough.getContext('2d')!;
+        const ctxNormal = canvasNormal.getContext('2d')!;
+        
+        const noise = createAdvancedFractalNoise(size, { octaves: 4, persistence: 0.5 });
+        const microNoise = createAdvancedFractalNoise(size, { octaves: 2, persistence: 0.8 });
+
+        const imgD = ctxDiffuse.createImageData(resolution, resolution);
+        const imgR = ctxRough.createImageData(resolution, resolution);
+        const imgN = ctxNormal.createImageData(resolution, resolution);
+        
+        const heightData = new Float32Array(size * size);
+        
+        for (let i = 0; i < size * size; i++) {
+            const val = noise[i];
+            const micro = microNoise[i];
+            
+            const finalHeight = val * 0.8 + micro * 0.2;
+            heightData[i] = finalHeight;
+            
+            const y = Math.floor(i / size);
+            const verticalOrientation = y / size; 
+            const dampnessBias = Math.pow(verticalOrientation, 3.0); 
+            
+            const dampness = Math.max(0, val - 0.4 + dampnessBias * 0.5); 
+            
+            // HSL to RGB variation logic (brown/olive concrete base)
+            imgD.data[i * 4] = 100 - (dampness * 40) + val * 20;     
+            imgD.data[i * 4 + 1] = 95 - (dampness * 35) + val * 20;   
+            imgD.data[i * 4 + 2] = 85 - (dampness * 30) + val * 20;   
+            imgD.data[i * 4 + 3] = 255;
+            
+            imgR.data[i * 4] = imgR.data[i * 4 + 1] = imgR.data[i * 4 + 2] = Math.max(0, 255 - (dampness * 150));
+            imgR.data[i * 4 + 3] = 255;
+        }
+        
+        for (let y = 0; y < size; y++) {
+            for (let x = 0; x < size; x++) {
+                const idx = y * size + x;
+                const idxL = y * size + Math.max(0, x - 1);
+                const idxR = y * size + Math.min(size - 1, x + 1);
+                const idxU = Math.max(0, y - 1) * size + x;
+                const idxD = Math.min(size - 1, y + 1) * size + x;
+                
+                const hL = heightData[idxL];
+                const hR = heightData[idxR];
+                const hU = heightData[idxU];
+                const hD = heightData[idxD];
+                
+                const scale = 5.0; 
+                const nX = (hL - hR) * scale;
+                const nY = (hU - hD) * scale;
+                const nZ = 1.0;
+                
+                const len = Math.hypot(nX, nY, nZ) || 1.0;
+                
+                imgN.data[idx * 4] = ((nX/len) * 0.5 + 0.5) * 255;
+                imgN.data[idx * 4 + 1] = ((nY/len) * 0.5 + 0.5) * 255;
+                imgN.data[idx * 4 + 2] = ((nZ/len) * 0.5 + 0.5) * 255;
+                imgN.data[idx * 4 + 3] = 255;
+            }
+        }
+
+        ctxDiffuse.putImageData(imgD, 0, 0);
+        ctxRough.putImageData(imgR, 0, 0);
+        ctxNormal.putImageData(imgN, 0, 0);
+        
+        const diffuseTex = new THREE.CanvasTexture(canvasDiffuse);
+        const roughTex = new THREE.CanvasTexture(canvasRough);
+        const normalTex = new THREE.CanvasTexture(canvasNormal);
+        
+        if (isDeviceMobile) {
+            normalTex.generateMipmaps = false;
+        }
+
+        diffuseTex.wrapS = roughTex.wrapS = normalTex.wrapS = THREE.RepeatWrapping;
+        diffuseTex.wrapT = roughTex.wrapT = normalTex.wrapT = THREE.RepeatWrapping;
+
+        return { diffuseTex, roughTex, normalTex };
+    };
+
+    const advancedWall = generateCrumblingConcreteTexture(isDeviceMobile ? 512 : 1024);
     const wallTex = advancedWall.diffuseTex;
     const wallRoughTex = advancedWall.roughTex;
     const wallNormalTex = advancedWall.normalTex;
@@ -621,11 +823,13 @@ export default function HorrorGame() {
         const resolution = 256;
         const canvasDiffuse = document.createElement('canvas');
         const canvasRough = document.createElement('canvas');
-        canvasDiffuse.width = canvasRough.width = resolution;
-        canvasDiffuse.height = canvasRough.height = resolution;
+        const canvasBump = document.createElement('canvas');
+        canvasDiffuse.width = canvasRough.width = canvasBump.width = resolution;
+        canvasDiffuse.height = canvasRough.height = canvasBump.height = resolution;
         
         const ctxDiffuse = canvasDiffuse.getContext('2d')!;
         const ctxRough = canvasRough.getContext('2d')!;
+        const ctxBump = canvasBump.getContext('2d')!;
         
         // Base tile colors
         const colorA = '#2a2a28';
@@ -635,6 +839,8 @@ export default function HorrorGame() {
         ctxDiffuse.fillRect(0, 0, resolution, resolution);
         ctxRough.fillStyle = '#cccccc'; // Default roughness
         ctxRough.fillRect(0, 0, resolution, resolution);
+        ctxBump.fillStyle = '#808080'; // middle gray for bump
+        ctxBump.fillRect(0, 0, resolution, resolution);
         
         // Simple seeded random to keep grid consistent
         const seededRandom = (x: number, y: number) => { return Math.abs(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453 % 1); }
@@ -652,30 +858,56 @@ export default function HorrorGame() {
                 
                 // Fine noise per tile
                 for(let n = 0; n < 300; n++) {
-                    ctxDiffuse.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.03)';
-                    ctxDiffuse.fillRect(i + Math.random() * tileSize, j + Math.random() * tileSize, Math.random()*2, Math.random()*2);
+                    const isDark = Math.random() > 0.5;
+                    ctxDiffuse.fillStyle = isDark ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.03)';
+                    const cx = i + Math.random() * tileSize;
+                    const cy = j + Math.random() * tileSize;
+                    const cSize = Math.random()*2;
+                    ctxDiffuse.fillRect(cx, cy, cSize, cSize);
+                    
+                    ctxBump.fillStyle = isDark ? 'rgba(110,110,110,0.1)' : 'rgba(140,140,140,0.1)';
+                    ctxBump.fillRect(cx, cy, cSize, cSize);
                 }
 
                 // Grout lines
                 ctxDiffuse.fillStyle = '#0a0a0a';
                 ctxDiffuse.fillRect(i, j, tileSize, 2);
                 ctxDiffuse.fillRect(i, j, 2, tileSize);
+                
+                // Deep bump for grout lines
+                ctxBump.fillStyle = '#202020';
+                ctxBump.fillRect(i, j, tileSize, 2);
+                ctxBump.fillRect(i, j, 2, tileSize);
 
-                // Grout imperfections
+                // Grout imperfections (cracks)
                 for(let k = 0; k < 6; k++) {
                     const gx = i + Math.random() * tileSize;
                     const gy = j + Math.random() * tileSize;
                     ctxDiffuse.fillStyle = 'rgba(0,0,0,0.8)';
+                    ctxBump.fillStyle = 'rgba(0,0,0,0.9)'; // very deep
+                    
                     // Cracks on horizontal grout
-                    ctxDiffuse.fillRect(gx, j - 1, Math.random()*6 + 2, Math.random()*4 + 1); 
+                    const w1 = Math.random()*6 + 2;
+                    const h1 = Math.random()*4 + 1;
+                    ctxDiffuse.fillRect(gx, j - 1, w1, h1); 
+                    ctxBump.fillRect(gx, j - 1, w1, h1);
+                    
                     // Cracks on vertical grout
-                    ctxDiffuse.fillRect(i - 1, gy, Math.random()*4 + 1, Math.random()*6 + 2); 
+                    const w2 = Math.random()*4 + 1;
+                    const h2 = Math.random()*6 + 2;
+                    ctxDiffuse.fillRect(i - 1, gy, w2, h2); 
+                    ctxBump.fillRect(i - 1, gy, w2, h2);
                 }
 
                 // Tiling Variation: Roughness offset per tile
                 const roughIntensity = Math.floor(tileRand * 40 + 160); 
                 ctxRough.fillStyle = `rgba(${roughIntensity}, ${roughIntensity}, ${roughIntensity}, 1)`;
                 ctxRough.fillRect(i, j, tileSize, tileSize);
+                
+                // Slight bump variation per tile to catch light differently
+                const bumpOff = Math.floor(tileRand * 10 - 5);
+                ctxBump.fillStyle = `rgba(${128 + bumpOff}, ${128 + bumpOff}, ${128 + bumpOff}, 0.2)`;
+                ctxBump.fillRect(i + 2, j + 2, tileSize - 4, tileSize - 4);
             }
         }
         
@@ -691,10 +923,15 @@ export default function HorrorGame() {
             for(let c = 0; c < 8; c++) {
                 const ox = dx + (Math.random() - 0.5) * size * 2;
                 const oy = dy + (Math.random() - 0.5) * size * 2;
-                ctxDiffuse.fillRect(ox, oy, Math.random()*3 + 1, Math.random()*3 + 1);
+                const ds = Math.random()*3 + 1;
+                ctxDiffuse.fillRect(ox, oy, ds, ds);
                 // Debris is very rough (matte)
                 ctxRough.fillStyle = 'rgba(255,255,255,0.5)';
                 ctxRough.fillRect(ox, oy, 2, 2);
+                
+                // Debris sticks out slightly
+                ctxBump.fillStyle = isDust ? 'rgba(135,135,135,0.4)' : 'rgba(150,150,150,0.7)';
+                ctxBump.fillRect(ox, oy, ds, ds);
             }
         }
 
@@ -722,6 +959,43 @@ export default function HorrorGame() {
             ctxRough.fill();
         }
 
+        // Generate Normal Map from Bump Map
+        const normalCanvas = document.createElement('canvas');
+        normalCanvas.width = resolution;
+        normalCanvas.height = resolution;
+        const bumpImgData = ctxBump.getImageData(0, 0, resolution, resolution);
+        const normalImgData = normalCanvas.getContext('2d')!.createImageData(resolution, resolution);
+        const bumpData = bumpImgData.data;
+        const normData = normalImgData.data;
+        
+        for (let y = 0; y < resolution; y++) {
+            for (let x = 0; x < resolution; x++) {
+                const idx = (y * resolution + x) * 4;
+                const idxL = (y * resolution + Math.max(0, x - 1)) * 4;
+                const idxR = (y * resolution + Math.min(resolution - 1, x + 1)) * 4;
+                const idxU = (Math.max(0, y - 1) * resolution + x) * 4;
+                const idxD = (Math.min(resolution - 1, y + 1) * resolution + x) * 4;
+                
+                const hL = bumpData[idxL] / 255.0;
+                const hR = bumpData[idxR] / 255.0;
+                const hU = bumpData[idxU] / 255.0;
+                const hD = bumpData[idxD] / 255.0;
+                
+                const scale = 5.0; 
+                const nX = (hL - hR) * scale;
+                const nY = (hU - hD) * scale;
+                const nZ = 1.0;
+                
+                const len = Math.sqrt(nX*nX + nY*nY + nZ*nZ);
+                
+                normData[idx] = ((nX/len) * 0.5 + 0.5) * 255;
+                normData[idx + 1] = ((nY/len) * 0.5 + 0.5) * 255;
+                normData[idx + 2] = ((nZ/len) * 0.5 + 0.5) * 255;
+                normData[idx + 3] = 255;
+            }
+        }
+        normalCanvas.getContext('2d')!.putImageData(normalImgData, 0, 0);
+
         const diffuseTex = new THREE.CanvasTexture(canvasDiffuse);
         diffuseTex.magFilter = THREE.NearestFilter;
         diffuseTex.minFilter = THREE.NearestFilter;
@@ -734,16 +1008,28 @@ export default function HorrorGame() {
         roughTex.wrapS = THREE.RepeatWrapping;
         roughTex.wrapT = THREE.RepeatWrapping;
 
-        return { diffuseTex, roughTex };
+        const normalTex = new THREE.CanvasTexture(normalCanvas);
+        normalTex.magFilter = THREE.NearestFilter;
+        normalTex.minFilter = THREE.NearestFilter;
+        normalTex.wrapS = THREE.RepeatWrapping;
+        normalTex.wrapT = THREE.RepeatWrapping;
+
+        if (isDeviceMobile) {
+            normalTex.generateMipmaps = false;
+        }
+
+        return { diffuseTex, roughTex, normalTex };
     };
 
     const advancedFloor = createAdvancedFloorTextures(128);
     const floorTex = advancedFloor.diffuseTex;
     const floorRoughTex = advancedFloor.roughTex;
+    const floorNormalTex = advancedFloor.normalTex;
 
     // Make the repeat larger for the floor/ceiling to span the map
     floorTex.repeat.set(mazeSize, mazeSize);
     floorRoughTex.repeat.set(mazeSize, mazeSize);
+    floorNormalTex.repeat.set(mazeSize, mazeSize);
     ceilingTex.repeat.set(mazeSize, mazeSize);
 
     const wallUniforms = {
@@ -822,7 +1108,15 @@ export default function HorrorGame() {
             `
         );
     };
-    const floorMat = new THREE.MeshStandardMaterial({ map: floorTex, roughnessMap: floorRoughTex, roughness: 1.0, metalness: 0.05, color: 0xcccccc });
+    const floorMat = new THREE.MeshStandardMaterial({ 
+        map: floorTex, 
+        roughnessMap: floorRoughTex, 
+        normalMap: floorNormalTex,
+        normalScale: new THREE.Vector2(2.0, 2.0),
+        roughness: 1.0, 
+        metalness: 0.05, 
+        color: 0xcccccc 
+    });
     const ceilingMat = new THREE.MeshStandardMaterial({ map: ceilingTex, roughness: 1, color: 0xaaaaaa });
 
     const maze = Array(mazeSize).fill(0).map(() => Array(mazeSize).fill(1));
@@ -979,7 +1273,10 @@ export default function HorrorGame() {
                     
                     const mat = new THREE.MeshStandardMaterial({ 
                         color: randomArtifact.color, 
-                        roughness: 0.2, 
+                        roughnessMap: wallRoughTex,
+                        normalMap: wallNormalTex,
+                        normalScale: new THREE.Vector2(2.0, 2.0),
+                        roughness: 0.8, 
                         metalness: 0.8 
                     });
                     
@@ -1013,7 +1310,56 @@ export default function HorrorGame() {
                         let px = x * unit;
                         let pz = y * unit;
 
-                        if (randomChoice < 0.25) {
+                        if (randomChoice < 0.15) {
+                            // Safe Zone / Save Point
+                            const shrineGroup = new THREE.Group();
+                            
+                            // Base/pedestal
+                            const shrineGeo = new THREE.CylinderGeometry(0.3, 0.4, 1.0, 8);
+                            const shrineMat = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 0.9 });
+                            const shrineMesh = new THREE.Mesh(shrineGeo, shrineMat);
+                            shrineGroup.add(shrineMesh);
+                            
+                            // Glowing orb / beacon
+                            const beaconGeo = new THREE.SphereGeometry(0.15, 16, 16);
+                            const beaconMat = new THREE.MeshBasicMaterial({ color: 0x22ffaa });
+                            const beaconMesh = new THREE.Mesh(beaconGeo, beaconMat);
+                            beaconMesh.position.y = 0.6;
+                            shrineGroup.add(beaconMesh);
+                            
+                            // Soothing light
+                            const safeLight = new THREE.PointLight(0x22ffaa, 200, 10, 2);
+                            safeLight.position.y = 0.6;
+                            shrineGroup.add(safeLight);
+
+                            if (hasWallEast) px += unit * 0.4;
+                            else if (hasWallWest) px -= unit * 0.4;
+                            else if (hasWallSouth) pz += unit * 0.4;
+                            else if (hasWallNorth) pz -= unit * 0.4;
+
+                            shrineGroup.position.set(px, 0.5, pz);
+                            shrineGroup.userData = {
+                                type: 'save_point',
+                                id: `save_point_${x}_${y}`,
+                                name: "Luminous Shrine",
+                                message: "The light holds back the rot. You can rest here."
+                            } as InteractableItem;
+
+                            scene.add(shrineGroup);
+                            
+                            // We construct a specific mesh for the raycaster
+                            const rayTargetGeo = new THREE.BoxGeometry(1, 1.5, 1);
+                            const rayTargetMat = new THREE.MeshBasicMaterial({ visible: false });
+                            const rayTargetMesh = new THREE.Mesh(rayTargetGeo, rayTargetMat);
+                            rayTargetMesh.position.copy(shrineGroup.position);
+                            rayTargetMesh.userData = shrineGroup.userData;
+                            scene.add(rayTargetMesh);
+                            interactablesRef.current.push(rayTargetMesh);
+                            
+                            // Mark location as a global safe zone
+                            envStatesRef.current[`safe_${x}_${y}`] = { state: 'active', x: px, z: pz };
+                            
+                        } else if (randomChoice < 0.35) {
                             // Breaker Switch
                             const switchGeo = new THREE.BoxGeometry(0.2, 0.3, 0.1);
                             const switchMat = new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.9, metalness: 0.2 });
@@ -1036,7 +1382,7 @@ export default function HorrorGame() {
                             scene.add(switchMesh);
                             interactablesRef.current.push(switchMesh);
                             envStatesRef.current[switchMesh.userData.id] = { state: 'on' };
-                        } else if (randomChoice < 0.5) {
+                        } else if (randomChoice < 0.6) {
                             // Leaking Pipe
                             const pipeGeo = new THREE.CylinderGeometry(0.08, 0.08, 3, 8);
                             const pipeMat = new THREE.MeshStandardMaterial({ color: 0x242424, roughness: 0.6, metalness: 0.8 });
@@ -1233,6 +1579,13 @@ export default function HorrorGame() {
     let deceptionPanner: PannerNode | null = null;
     let deceptionNoise: OscillatorNode | null = null;
     let deceptionGain: GainNode | null = null;
+    
+    // Ambient soundscapes
+    let ambientWhisperGain: GainNode | null = null;
+    let ambientWhisperOsc: OscillatorNode | null = null;
+    let ambientGroanGain: GainNode | null = null;
+    let ambientGroanOsc: OscillatorNode | null = null;
+    let ambientDripTimer = 0;
 
     const initAudio = () => {
         if (audioCtx) return;
@@ -1301,6 +1654,45 @@ export default function HorrorGame() {
         deceptionPanner.connect(masterGain);
         deceptionNoise.start();
 
+        // Ambient Whispers
+        ambientWhisperOsc = audioCtx.createOscillator();
+        ambientWhisperOsc.type = 'sawtooth';
+        ambientWhisperOsc.frequency.value = 50; 
+        
+        ambientWhisperGain = audioCtx.createGain();
+        ambientWhisperGain.gain.value = 0;
+        
+        const whisperFilter = audioCtx.createBiquadFilter();
+        whisperFilter.type = 'bandpass';
+        whisperFilter.frequency.value = 2000;
+        whisperFilter.Q.value = 10;
+        
+        ambientWhisperOsc.connect(whisperFilter);
+        whisperFilter.connect(ambientWhisperGain);
+        ambientWhisperGain.connect(masterGain);
+        ambientWhisperOsc.start();
+        
+        // Ambient Groans
+        ambientGroanOsc = audioCtx.createOscillator();
+        ambientGroanOsc.type = 'sine';
+        ambientGroanOsc.frequency.value = 40;
+        
+        ambientGroanGain = audioCtx.createGain();
+        ambientGroanGain.gain.value = 0;
+        
+        const groanDistortion = audioCtx.createWaveShaper();
+        const curve = new Float32Array(400);
+        for (let i = 0; i < 400; i++) {
+            const x = i * 2 / 400 - 1;
+            curve[i] = ( 3 + 10 ) * x * 20 * Math.PI / ( Math.PI + 10 * Math.abs(x) );
+        }
+        groanDistortion.curve = curve;
+        
+        ambientGroanOsc.connect(groanDistortion);
+        groanDistortion.connect(ambientGroanGain);
+        ambientGroanGain.connect(masterGain);
+        ambientGroanOsc.start();
+
         // Listener setup setup
         const listener = audioCtx.listener;
         // The listener is updated in the animation loop
@@ -1328,7 +1720,21 @@ export default function HorrorGame() {
               if (!isLocked && !isMobileMode) controls.lock();
            } else if (hoveredNoteRef.current && (isLocked || isMobileMode)) {
               const item = hoveredNoteRef.current;
-              saveNoteFound(item.id); 
+              
+              if (item.type === 'save_point') {
+                  saveGameAtCheckpoint();
+                  paranoiaRef.current = 0.0;
+                  setReadingNote({
+                      id: "save_success",
+                      type: "save_point",
+                      name: "Luminous Shrine",
+                      message: "Progress secured. Heart rate stabilized."
+                  });
+                  controls.unlock();
+                  return;
+              }
+              
+              collectItemLocally(item.id); 
               
               if (item.type === 'note' || item.type === 'artifact' || item.type === 'cabinet') {
                   setReadingNote(item);
@@ -1591,23 +1997,42 @@ export default function HorrorGame() {
           }
       }
 
-      // Flashlight flicker
+      const distToStalker = camera.position.distanceTo(stalker.position);
+
+      // Flashlight flicker (Dynamic based on threat: proximity + paranoia)
+      const proximityThreat = Math.max(0, 1 - (distToStalker / 25)); // Increases as stalker gets closer than 25 units
+      const threatLevel = Math.max(paranoiaRef.current, proximityThreat); 
+
+      // Increase flicker frequency and intensity as threat rises
+      const flickerThreshold = 2.0 - (threatLevel * 1.6); // Triggers more often (down to 0.4s)
+      const flickerReset = flickerThreshold + 0.5 - (threatLevel * 0.3); // Resets faster
+      
       flickerTimer += delta;
-      if (flickerTimer > 2) {
-         if (Math.random() > 0.90) {
-             flashLight.intensity = Math.random() * 50 + 10;
+      if (flickerTimer > flickerThreshold) {
+         // Higher threat = higher chance to flicker and fail completely
+         const flickerChance = 0.90 - (threatLevel * 0.4); 
+         const completeFailureChance = threatLevel * 0.45 + (stalkerDirectorRef.current.mode === 'absence' ? 0.2 : 0);
+
+         if (Math.random() > flickerChance) {
+             // Severe flickering
+             flashLight.intensity = Math.random() * 100 + 10;
+             if (Math.random() < completeFailureChance) {
+                  // Total blackout
+                  flashLight.intensity = 0; 
+             }
          } else {
-             // In absence, lights are more likely to fail completely causing spikes in tension
-             if (stalkerDirectorRef.current.mode === 'absence' && Math.random() > 0.7) {
+             if (stalkerDirectorRef.current.mode === 'absence' && Math.random() > (0.7 - threatLevel * 0.2)) {
                  flashLight.intensity = 0;
              } else {
-                 flashLight.intensity = 300;
+                 flashLight.intensity = 300 - (threatLevel * 100); // Shaky baseline power 
              }
          }
-         if (flickerTimer > 2.5) flickerTimer = 0;
+         
+         // Sometimes stay broken longer
+         const failPenalty = (flashLight.intensity === 0 && Math.random() < threatLevel) ? (Math.random() * 0.5) : 0;
+         
+         if (flickerTimer > (flickerReset + failPenalty)) flickerTimer = 0;
       }
-      
-      const distToStalker = camera.position.distanceTo(stalker.position);
       
       // Update Paranoia
       if (distToStalker < 20) {
@@ -1621,6 +2046,58 @@ export default function HorrorGame() {
           paranoiaRef.current -= delta * 0.01;
       }
       paranoiaRef.current = Math.max(0, Math.min(1, paranoiaRef.current));
+      
+      // Ambient Soundscapes updating
+      if (audioCtx) {
+          const t = audioCtx.currentTime;
+          
+          // Groan: linked to proximity using proximityThreat
+          if (ambientGroanGain && ambientGroanOsc) {
+              const targetGroanVol = proximityThreat * 0.15;
+              ambientGroanGain.gain.setTargetAtTime(targetGroanVol, t, 0.5);
+              if (proximityThreat > 0) {
+                  ambientGroanOsc.frequency.setTargetAtTime(40 + (Math.sin(elapsedTime) * 10) + (proximityThreat * 50), t, 0.5);
+              }
+          }
+          
+          // Whispers: linked to paranoia
+          if (ambientWhisperGain && ambientWhisperOsc) {
+              const targetWhisperVol = paranoiaRef.current > 0.3 ? (paranoiaRef.current - 0.3) * 0.1 : 0;
+              ambientWhisperGain.gain.setTargetAtTime(targetWhisperVol, t, 0.5);
+              if (paranoiaRef.current > 0.3) {
+                   ambientWhisperOsc.frequency.setTargetAtTime(50 + (Math.random() * paranoiaRef.current * 200), t, 0.1);
+              }
+          }
+          
+          // Dripping Water: sudden short sine sweeps (plips) independent but frequency scales with tension
+          ambientDripTimer += delta;
+          const dripThreshold = 2.0 - (paranoiaRef.current * 1.5);
+          if (ambientDripTimer > dripThreshold && Math.random() < 0.05) {
+               ambientDripTimer = 0;
+               const dripOsc = audioCtx.createOscillator();
+               dripOsc.type = 'sine';
+               dripOsc.frequency.setValueAtTime(800 + Math.random() * 400, t);
+               dripOsc.frequency.exponentialRampToValueAtTime(100, t + 0.1);
+               
+               const dripGain = audioCtx.createGain();
+               dripGain.gain.setValueAtTime(0.0, t);
+               dripGain.gain.linearRampToValueAtTime(0.05, t + 0.01);
+               dripGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+               
+               const dripPanner = audioCtx.createPanner();
+               dripPanner.panningModel = 'HRTF';
+               dripPanner.positionX.value = camera.position.x + (Math.random() - 0.5) * 10;
+               dripPanner.positionY.value = camera.position.y + 2 + Math.random() * 2;
+               dripPanner.positionZ.value = camera.position.z + (Math.random() - 0.5) * 10;
+               
+               dripOsc.connect(dripGain);
+               dripGain.connect(dripPanner);
+               if (masterGain) dripPanner.connect(masterGain);
+               
+               dripOsc.start(t);
+               dripOsc.stop(t + 0.2);
+          }
+      }
 
       // Camera FOV warping (Loss of Control / Physiological response)
       camera.fov = 75 + Math.sin(time / 200) * (paranoiaRef.current * 10);
@@ -1773,12 +2250,24 @@ export default function HorrorGame() {
                  const newMesh = interactablesRef.current.find(m => m.userData.id === foundHover?.id);
                  if (newMesh) {
                      const mat = newMesh.material as THREE.MeshStandardMaterial;
-                     if(mat) mat.emissive.setHex(0x222222);
+                     if(mat) mat.emissive.setHex(0x666666);
                  }
             }
 
             hoveredNoteRef.current = foundHover;
             setHoveredNote(foundHover);
+        }
+        
+        // Dynamic pulsing for current hovered item
+        if (hoveredNoteRef.current) {
+            const hMesh = interactablesRef.current.find(m => m.userData.id === hoveredNoteRef.current?.id);
+            if (hMesh) {
+                const mat = hMesh.material as THREE.MeshStandardMaterial;
+                if (mat) {
+                    const pulse = Math.abs(Math.sin(elapsedTime * 4.0)) * 0.5 + 0.1;
+                    mat.emissiveIntensity = pulse;
+                }
+            }
         }
 
         // Player Movement
@@ -1899,12 +2388,21 @@ export default function HorrorGame() {
         let isStunned = false;
         let isHidden = false;
         let lurePos: { x: number, z: number } | null = null;
+        let isSafeZoneFendingOff = false;
         const now = Date.now();
 
         for (const key in envStatesRef.current) {
              const s = envStatesRef.current[key];
              if (s.stunUntil && s.stunUntil > now) isStunned = true;
              if (s.hissUntil && s.hissUntil > now) isHidden = true;
+             if (key.startsWith('safe_')) {
+                 const dx = camera.position.x - s.x;
+                 const dz = camera.position.z - s.z;
+                 const distToSafe = Math.hypot(dx, dz);
+                 if (distToSafe < 4.0) {
+                     isSafeZoneFendingOff = true;
+                 }
+             }
         }
         
         if (envStatesRef.current.globalLure && envStatesRef.current.globalLure.time > now) {
@@ -1915,10 +2413,10 @@ export default function HorrorGame() {
         let currentStalkerSpeed = 1.5;
 
         // Apply dynamic director modifiers
-        if (dScore.mode === 'absence') {
+        if (isSafeZoneFendingOff || dScore.mode === 'absence') {
              const awayDir = stalker.position.clone().sub(camera.position).normalize();
              finalPlayerPos = { x: camera.position.x + awayDir.x * 40, z: camera.position.z + awayDir.z * 40 };
-             currentStalkerSpeed = 4.0;
+             currentStalkerSpeed = isSafeZoneFendingOff ? 8.0 : 4.0;
         } else if (dScore.mode === 'gaslight') {
              if (distToPlayer < 15) {
                   const awayDir = stalker.position.clone().sub(camera.position).normalize();
@@ -1959,7 +2457,9 @@ export default function HorrorGame() {
         // Tell worker to compute path
         aiWorker.postMessage({
             playerPos: finalPlayerPos,
-            stalkerPos: { x: stalker.position.x, z: stalker.position.z }
+            stalkerPos: { x: stalker.position.x, z: stalker.position.z },
+            mazeData: maze,
+            unit: 2.5
         });
 
         if (!isStunned) {
@@ -2076,6 +2576,11 @@ export default function HorrorGame() {
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
       composer.setSize(window.innerWidth, window.innerHeight);
+      if (fxaaPass) {
+          const pixelRatio = renderer.getPixelRatio();
+          fxaaPass.material.uniforms['resolution'].value.x = 1 / (window.innerWidth * pixelRatio);
+          fxaaPass.material.uniforms['resolution'].value.y = 1 / (window.innerHeight * pixelRatio);
+      }
     };
     window.addEventListener('resize', onWindowResize);
 
@@ -2242,7 +2747,7 @@ export default function HorrorGame() {
             onClick={() => controlsRef.current?.lock()}
         >
              <p className="text-3xl font-serif tracking-widest text-red-700 animate-pulse">
-                 {paranoiaRef.current > 0.8 ? "IT IS RIGHT BEHIND YOU" : paranoiaRef.current > 0.5 ? "UNSAFE" : "PAUSED"}
+                 {pauseText}
              </p>
              <p className="text-gray-500 mt-6 font-mono text-sm tracking-widest">Click the screen to return</p>
         </div>
@@ -2255,26 +2760,49 @@ export default function HorrorGame() {
           </div>
       )}
 
+      {saveMessage && (
+          <div className="absolute top-10 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
+              <div className="bg-black/60 border border-green-500/30 px-6 py-3 rounded backdrop-blur-md">
+                  <p className="text-green-400 font-mono text-sm tracking-[0.3em] font-bold animate-pulse">
+                      {saveMessage}
+                  </p>
+              </div>
+          </div>
+      )}
+
       {isStarted && (isLocked || isMobileMode) && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-              <div className="w-[3px] h-[3px] bg-white/40 rounded-full"></div>
+              {hoveredNote ? (
+                  <div className="w-5 h-5 flex flex-col items-center justify-center relative">
+                      <div className="absolute w-[4px] h-[4px] bg-white/80 rounded-full"></div>
+                      <div className="absolute w-full h-full border border-white/40 rounded-full animate-ping"></div>
+                  </div>
+              ) : (
+                  <div className="w-[3px] h-[3px] bg-white/40 rounded-full"></div>
+              )}
           </div>
       )}
 
       {isStarted && (isLocked || isMobileMode) && hoveredNote && !readingNote && (
-          <div className="absolute top-[55%] left-1/2 -translate-x-1/2 pointer-events-auto text-white opacity-80 z-20">
-              <p className="font-mono text-sm tracking-widest hidden md:block">
-                  [E] {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'Read' : 'Interact'}
-              </p>
-              <button 
-                  className="md:hidden px-6 py-3 bg-white/10 border border-white/20 rounded font-mono text-sm tracking-widest pointer-events-auto backdrop-blur-md"
-                  onTouchEnd={(e) => {
-                       e.stopPropagation();
-                       document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
-                  }}
-              >
-                  TAP TO {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'READ' : 'INTERACT'}
-              </button>
+          <div className="absolute top-[55%] left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-auto text-white z-20 transition-opacity duration-300">
+              <div className="bg-black/60 backdrop-blur-md px-4 py-2 border border-white/20 rounded flex flex-col items-center animate-pulse">
+                  {hoveredNote.name && (
+                      <span className="text-xs text-gray-300 font-mono tracking-wider mb-1 uppercase text-center border-b border-white/10 pb-1 w-full">{hoveredNote.name}</span>
+                  )}
+                  <p className="font-mono text-sm tracking-widest hidden md:block mt-1">
+                      <span className="bg-white/20 px-1.5 py-0.5 rounded mr-2 inline-block">E</span> 
+                      {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'READ' : 'INTERACT'}
+                  </p>
+                  <button 
+                      className="md:hidden mt-2 px-6 py-2 bg-white/10 border border-white/20 rounded font-mono text-sm tracking-widest pointer-events-auto focus:outline-none focus:bg-white/20"
+                      onTouchEnd={(e) => {
+                           e.stopPropagation();
+                           document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
+                      }}
+                  >
+                      TAP TO {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'READ' : 'INTERACT'}
+                  </button>
+              </div>
           </div>
       )}
 
@@ -2298,7 +2826,12 @@ export default function HorrorGame() {
                  <p className="font-serif text-2xl text-red-950 leading-relaxed font-bold italic mix-blend-color-burn" style={{ fontFamily: '"Playfair Display", serif' }}>
                     {readingNote.message}
                  </p>
-                 <p className="absolute bottom-4 right-4 text-xs font-mono text-gray-500 opacity-60 pointer-events-none hidden md:block">[E] Close</p>
+                 {readingNote.type !== 'save_point' && (
+                     <p className="mt-6 text-xs font-mono text-red-800 opacity-80 uppercase tracking-widest border-t border-red-900/10 pt-4">
+                         New Data Acquired. Locate a Shrine to secure progress.
+                     </p>
+                 )}
+                 <p className="absolute text-xs font-mono text-gray-500 opacity-60 pointer-events-none hidden md:block" style={{ bottom: '-30px', right: '0px', color: 'white' }}>[E] Close</p>
                  <button 
                      className="absolute bottom-4 right-4 text-xs font-mono text-gray-700 bg-black/5 px-3 py-2 rounded md:hidden border border-black/10"
                      onTouchEnd={() => {
