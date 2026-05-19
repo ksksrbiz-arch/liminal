@@ -12,28 +12,29 @@ import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
 
 const POSSIBLE_NOTES = [
-    "It wears the faces of the people it takes. I saw my own face.",
-    "Don't look at the walls for too long. They blink back.",
-    "It understands human anatomy perfectly, but it enjoys putting us back together wrong.",
-    "The layout changes when you blink. We are not inside a building.",
-    "I've been descending these stairs for days. The numbers keep going up.",
-    "If you hear it breathing, DO NOT MOVE.",
-    "It doesn't want to kill us. It wants to learn how to be us."
+    { id: "n1", name: "Torn Page", text: "It wears the faces of the people it takes. I saw my own face.", effect: 0.15 },
+    { id: "n2", name: "Hastily Scrawled Note", text: "Don't look at the walls for too long. They blink back.", effect: 0.1 },
+    { id: "n3", name: "Medical Log", text: "It understands human anatomy perfectly, but it enjoys putting us back together wrong.", effect: 0.2 },
+    { id: "n4", name: "Architect's Warning", text: "The layout changes when you blink. We are not inside a building.", effect: 0.15 },
+    { id: "n5", name: "Maintenance Report", text: "The primary cooling pipe burst. Focus on the sound of the drips... it calms the mind.", effect: -0.15 },
+    { id: "n6", name: "Ripped Poster", text: "If you hear it breathing, DO NOT MOVE.", effect: 0.2 },
+    { id: "n7", name: "Psychiatric Eval", text: "It doesn't want to kill us. It wants to learn how to be us.", effect: 0.15 }
 ];
 
 export type InteractableItem = {
-    type: 'note' | 'artifact' | 'pipe' | 'switch' | 'phone' | 'cabinet' | 'save_point';
+    type: 'note' | 'artifact' | 'pipe' | 'switch' | 'phone' | 'cabinet' | 'save_point' | 'tape_recorder';
     id: string;
     message: string;
     name?: string;
+    paranoiaEffect?: number;
 };
 
 const POSSIBLE_ARTIFACTS = [
-    { id: "a1", name: "Shattered Tape Recorder", message: "Voice log: '...it's not a mimic. It's an echo. It replays their last moments...'", color: 0x2a2a2a, shape: "box" },
-    { id: "a2", name: "Children's Shoe", message: "A pristine, single children's sneaker. It's inexplicably warm to the touch.", color: 0x8b5a2b, shape: "box" },
-    { id: "a3", name: "Employee Badge", message: "The photo is scratched out. The name reads: YOUR NAME.", color: 0x550000, shape: "tetra" },
-    { id: "a4", name: "Ripped Journal Page", message: "It only moves when you can't hear it. Wait... or is it when you CAN hear it?", color: 0xdddddd, shape: "cylinder" },
-    { id: "a5", name: "Bent Syringe", message: "The needle is bent. The thick black fluid inside is still rhythmically pulsing.", color: 0xaaaaaa, shape: "cylinder" }
+    { id: "a1", name: "Shattered Tape Recorder", message: "Voice log: '...it's not a mimic. It's an echo. It replays their last moments...'", color: 0x2a2a2a, shape: "box", type: "tape_recorder", effect: 0.2 },
+    { id: "a2", name: "Children's Shoe", message: "A pristine, single children's sneaker. It's inexplicably warm to the touch.", color: 0x8b5a2b, shape: "box", type: "artifact", effect: 0.15 },
+    { id: "a3", name: "Employee Badge", message: "The photo is scratched out. The name reads: YOUR NAME.", color: 0x550000, shape: "tetra", type: "artifact", effect: 0.25 },
+    { id: "a4", name: "Ripped Journal Page", message: "It only moves when you can't hear it. Wait... or is it when you CAN hear it?", color: 0xdddddd, shape: "cylinder", type: "artifact", effect: 0.2 },
+    { id: "a5", name: "Bent Syringe", message: "The needle is bent. The thick black fluid inside is still rhythmically pulsing.", color: 0xaaaaaa, shape: "cylinder", type: "artifact", effect: 0.15 }
 ];
 
 const POSSIBLE_CALLS = [
@@ -43,9 +44,9 @@ const POSSIBLE_CALLS = [
 ];
 
 const POSSIBLE_MEMORIES = [
-    { id: "m1", name: "Fragmented Memory", message: "LOG 492: The walls are bleeding again. We're running out of buckets." },
-    { id: "m2", name: "Fragmented Memory", message: "LOG 501: It spoke today. It used my mother's voice. She's been dead for ten years." },
-    { id: "m3", name: "Fragmented Memory", message: "INTERVIEW TRANSCRIPT: 'It doesn't bite. It just... unfolds... and then you're inside it.'" }
+    { id: "m1", name: "Fragmented Memory", message: "LOG 492: The walls are bleeding again. We're running out of buckets.", effect: 0.15 },
+    { id: "m2", name: "Fragmented Memory", message: "LOG 501: It spoke today. It used my mother's voice. She's been dead for ten years.", effect: 0.2 },
+    { id: "m3", name: "Fragmented Memory", message: "INTERVIEW TRANSCRIPT: 'It doesn't bite. It just... unfolds... and then you're inside it.'", effect: 0.25 }
 ];
 
 export default function HorrorGame() {
@@ -60,6 +61,7 @@ export default function HorrorGame() {
   const hoveredNoteRef = useRef<InteractableItem | null>(null);
   const [readingNote, setReadingNote] = useState<InteractableItem | null>(null);
   const interactablesRef = useRef<THREE.Mesh[]>([]);
+  const decalsRef = useRef<THREE.Mesh[]>([]);
   const raycaster = new THREE.Raycaster();
   const centerPoint = new THREE.Vector2(0, 0);
   const [user, setUser] = useState<any>(null); // simple state for UI
@@ -1214,6 +1216,37 @@ export default function HorrorGame() {
                 lod.position.set(x * unit, 1.25, y * unit);
                 scene.add(lod);
                 
+                // Add Paranoia Decals on walls
+                if (Math.random() < 0.15) {
+                    const decalGeo = new THREE.PlaneGeometry(1.5, 1.5);
+                    const decalMat = new THREE.MeshBasicMaterial({ color: 0x2e0000, transparent: true, opacity: 0, depthWrite: false, blending: THREE.MultiplyBlending });
+                    const decalMesh = new THREE.Mesh(decalGeo, decalMat);
+                    
+                    let decalSpawned = false;
+                    if (x > 0 && maze[x-1][y] === 0) {
+                        decalMesh.position.set(x * unit - unit/2 + 0.01, 1.25, y * unit);
+                        decalMesh.rotation.y = -Math.PI / 2;
+                        decalSpawned = true;
+                    } else if (x < mazeSize -1 && maze[x+1][y] === 0) {
+                        decalMesh.position.set(x * unit + unit/2 - 0.01, 1.25, y * unit);
+                        decalMesh.rotation.y = Math.PI / 2;
+                        decalSpawned = true;
+                    } else if (y > 0 && maze[x][y-1] === 0) {
+                        decalMesh.position.set(x * unit, 1.25, y * unit - unit/2 + 0.01);
+                        decalMesh.rotation.y = Math.PI;
+                        decalSpawned = true;
+                    } else if (y < mazeSize - 1 && maze[x][y+1] === 0) {
+                        decalMesh.position.set(x * unit, 1.25, y * unit + unit/2 - 0.01);
+                        decalMesh.rotation.y = 0;
+                        decalSpawned = true;
+                    }
+                    
+                    if (decalSpawned) {
+                        scene.add(decalMesh);
+                        decalsRef.current.push(decalMesh);
+                    }
+                }
+                
                 const box = new THREE.Box3().setFromObject(midMesh); // use mid for simple box calc
                 boundingBoxes.push(box);
             } else {
@@ -1256,8 +1289,10 @@ export default function HorrorGame() {
                     // User data to identify it
                     note.userData = { 
                         type: 'note', 
-                        id: randomNote,
-                        message: randomNote 
+                        id: randomNote.id,
+                        name: randomNote.name,
+                        message: randomNote.text,
+                        paranoiaEffect: randomNote.effect
                     } as InteractableItem;
                     
                     scene.add(note);
@@ -1290,10 +1325,11 @@ export default function HorrorGame() {
                     artifactMesh.receiveShadow = true;
                     
                     artifactMesh.userData = {
-                        type: 'artifact',
+                        type: randomArtifact.type as any,
                         id: randomArtifact.id,
                         name: randomArtifact.name,
-                        message: randomArtifact.message
+                        message: randomArtifact.message,
+                        paranoiaEffect: randomArtifact.effect
                     } as InteractableItem;
                     
                     scene.add(artifactMesh);
@@ -1736,7 +1772,12 @@ export default function HorrorGame() {
               
               collectItemLocally(item.id); 
               
-              if (item.type === 'note' || item.type === 'artifact' || item.type === 'cabinet') {
+              if (item.paranoiaEffect && !unsavedNotesRef.current.includes(item.id) && !savedNotes.includes(item.id)) {
+                   paranoiaRef.current += item.paranoiaEffect;
+                   paranoiaRef.current = Math.max(0, Math.min(1, paranoiaRef.current));
+              }
+
+              if (item.type === 'note' || item.type === 'artifact' || item.type === 'cabinet' || item.type === 'tape_recorder') {
                   setReadingNote(item);
                   controls.unlock();
                   
@@ -1769,6 +1810,19 @@ export default function HorrorGame() {
                           gainNode.connect(ctx.destination);
                           osc.start();
                           osc.stop(ctx.currentTime + 1);
+                      } else if (item.type === 'tape_recorder') {
+                          // Spooky tape player effect
+                          const noise = ctx.createOscillator();
+                          noise.type = 'square';
+                          noise.frequency.setValueAtTime(100, ctx.currentTime);
+                          noise.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 1);
+                          const gain = ctx.createGain();
+                          gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                          gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 2);
+                          noise.connect(gain);
+                          gain.connect(ctx.destination);
+                          noise.start();
+                          noise.stop(ctx.currentTime + 2);
                       }
                   }
               } else if (item.type === 'phone') {
@@ -2047,6 +2101,13 @@ export default function HorrorGame() {
       }
       paranoiaRef.current = Math.max(0, Math.min(1, paranoiaRef.current));
       
+      // Update Decals
+      const targetDecalOpacity = paranoiaRef.current > 0.5 ? (paranoiaRef.current - 0.5) * 2.0 : 0;
+      decalsRef.current.forEach(decal => {
+          const mat = decal.material as THREE.MeshBasicMaterial;
+          mat.opacity += (targetDecalOpacity - mat.opacity) * 0.05;
+      });
+
       // Ambient Soundscapes updating
       if (audioCtx) {
           const t = audioCtx.currentTime;
@@ -2647,23 +2708,24 @@ export default function HorrorGame() {
             <div className="relative z-10 flex flex-col items-center justify-center w-full">
             {showNotesMenu ? (
                 <div className="w-full max-w-2xl flex flex-col items-center">
-                    <h2 className="text-4xl font-serif text-red-700 mb-8 tracking-widest">FOUND LOGS</h2>
+                    <h2 className="text-4xl font-serif text-red-700 mb-8 tracking-widest border-b border-red-900/30 pb-2">LORE DATABASE</h2>
                     <div className="w-full max-h-[60vh] overflow-y-auto pr-4 space-y-4 font-serif italic text-gray-300 pointer-events-auto">
                         {savedNotes.length === 0 ? (
                             <p className="text-center text-gray-600 font-mono not-italic text-sm">No items found yet.</p>
                         ) : (
                             savedNotes.map((noteId, i) => {
+                                const note = POSSIBLE_NOTES.find(n => n.id === noteId);
                                 const artifact = POSSIBLE_ARTIFACTS.find(a => a.id === noteId);
                                 const call = POSSIBLE_CALLS.find(c => c.id === noteId.split('_')[0]); // phone ids are c1_x_y
                                 const memory = POSSIBLE_MEMORIES.find(m => m.id === noteId.split('_')[0]); // cabinet ids are m1_x_y
                                 
-                                const matchedItem = artifact || call || memory;
+                                const matchedItem = note || artifact || call || memory;
 
                                 if (matchedItem) {
                                     return (
                                         <div key={i} className="p-6 border border-gray-800 bg-gray-900/30">
                                             <h3 className="text-red-800 font-mono uppercase font-bold text-xs tracking-widest border-b border-gray-800 mb-2 pb-2 not-italic">{matchedItem.name}</h3>
-                                            <p>&quot;{matchedItem.message}&quot;</p>
+                                            <p>&quot;{'text' in matchedItem ? matchedItem.text : matchedItem.message}&quot;</p>
                                         </div>
                                     );
                                 }
@@ -2791,7 +2853,7 @@ export default function HorrorGame() {
                   )}
                   <p className="font-mono text-sm tracking-widest hidden md:block mt-1">
                       <span className="bg-white/20 px-1.5 py-0.5 rounded mr-2 inline-block">E</span> 
-                      {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'READ' : 'INTERACT'}
+                      {hoveredNote.type === 'tape_recorder' ? 'PLAY LOG' : ['note', 'artifact', 'cabinet'].includes(hoveredNote.type) ? 'READ' : hoveredNote.type === 'phone' ? 'ANSWER' : 'INTERACT'}
                   </p>
                   <button 
                       className="md:hidden mt-2 px-6 py-2 bg-white/10 border border-white/20 rounded font-mono text-sm tracking-widest pointer-events-auto focus:outline-none focus:bg-white/20"
@@ -2800,7 +2862,7 @@ export default function HorrorGame() {
                            document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE' }));
                       }}
                   >
-                      TAP TO {['note', 'artifact', 'cabinet', 'phone'].includes(hoveredNote.type) ? 'READ' : 'INTERACT'}
+                      TAP TO {hoveredNote.type === 'tape_recorder' ? 'PLAY LOG' : ['note', 'artifact', 'cabinet'].includes(hoveredNote.type) ? 'READ' : hoveredNote.type === 'phone' ? 'ANSWER' : 'INTERACT'}
                   </button>
               </div>
           </div>
@@ -2818,29 +2880,40 @@ export default function HorrorGame() {
                  if (!isMobileMode && !isLocked) controlsRef.current?.lock();
              }}
           >
-             <div className="bg-[#e4dfd0] p-10 max-w-lg min-h-64 shadow-2xl rotate-1 rounded-sm relative m-4" onClick={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
-                 <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_transparent_0%,_rgba(0,0,0,0.1)_100%)] pointer-events-none"></div>
-                 {readingNote.type !== 'note' && readingNote.name && (
-                     <h3 className="font-serif text-xl text-red-950 font-bold border-b border-red-900/20 pb-2 mb-4 uppercase tracking-widest">{readingNote.name}</h3>
-                 )}
-                 <p className="font-serif text-2xl text-red-950 leading-relaxed font-bold italic mix-blend-color-burn" style={{ fontFamily: '"Playfair Display", serif' }}>
-                    {readingNote.message}
-                 </p>
-                 {readingNote.type !== 'save_point' && (
-                     <p className="mt-6 text-xs font-mono text-red-800 opacity-80 uppercase tracking-widest border-t border-red-900/10 pt-4">
-                         New Data Acquired. Locate a Shrine to secure progress.
+             {['tape_recorder', 'phone'].includes(readingNote.type) ? (
+                 <div className="absolute bottom-32 w-full px-8 flex flex-col items-center animate-fade-in">
+                     <p className="font-mono text-xl text-white uppercase tracking-widest bg-black/60 px-4 py-2 rounded text-center max-w-2xl shadow-xl shadow-black/50">
+                        &quot;{readingNote.message}&quot;
                      </p>
-                 )}
-                 <p className="absolute text-xs font-mono text-gray-500 opacity-60 pointer-events-none hidden md:block" style={{ bottom: '-30px', right: '0px', color: 'white' }}>[E] Close</p>
-                 <button 
-                     className="absolute bottom-4 right-4 text-xs font-mono text-gray-700 bg-black/5 px-3 py-2 rounded md:hidden border border-black/10"
-                     onTouchEnd={() => {
-                         setReadingNote(null);
-                     }}
-                 >
-                     Close
-                 </button>
-             </div>
+                     <p className="mt-4 text-xs font-mono text-gray-500 opacity-80 uppercase tracking-widest bg-black/20 px-2 py-1 rounded">
+                         [AUDIO PLAYING...] {(isMobileMode || !isLocked) ? 'TAP OUTSIDE TO CLOSE' : 'PRESS [E] TO CLOSE'}
+                     </p>
+                 </div>
+             ) : (
+                 <div className="bg-[#e4dfd0] p-10 max-w-lg min-h-64 shadow-2xl rotate-1 rounded-sm relative m-4" onClick={(e) => e.stopPropagation()} onTouchEnd={(e) => e.stopPropagation()}>
+                     <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_transparent_0%,_rgba(0,0,0,0.1)_100%)] pointer-events-none"></div>
+                     {readingNote.type !== 'note' && readingNote.name && (
+                         <h3 className="font-serif text-xl text-red-950 font-bold border-b border-red-900/20 pb-2 mb-4 uppercase tracking-widest">{readingNote.name}</h3>
+                     )}
+                     <p className="font-serif text-2xl text-red-950 leading-relaxed font-bold italic mix-blend-color-burn" style={{ fontFamily: '"Playfair Display", serif' }}>
+                        {readingNote.message}
+                     </p>
+                     {readingNote.type !== 'save_point' && (
+                         <p className="mt-6 text-xs font-mono text-red-800 opacity-80 uppercase tracking-widest border-t border-red-900/10 pt-4">
+                             New Data Acquired. Locate a Shrine to secure progress.
+                         </p>
+                     )}
+                     <p className="absolute text-xs font-mono text-gray-500 opacity-60 pointer-events-none hidden md:block" style={{ bottom: '-30px', right: '0px', color: 'white' }}>[E] Close</p>
+                     <button 
+                         className="absolute bottom-4 right-4 text-xs font-mono text-gray-700 bg-black/5 px-3 py-2 rounded md:hidden border border-black/10"
+                         onTouchEnd={() => {
+                             setReadingNote(null);
+                         }}
+                     >
+                         Close
+                     </button>
+                 </div>
+             )}
           </div>
       )}
       
