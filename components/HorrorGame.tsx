@@ -2706,13 +2706,24 @@ export default function HorrorGame() {
                  deceptionGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
              }
         } else if (dScore.mode === 'ambush') {
-             // Route to player's predicted forward path
-             const expectedPath = camera.position.clone().add(camForward.clone().multiplyScalar(15));
-             finalPlayerPos = { x: expectedPath.x, z: expectedPath.z };
-             currentStalkerSpeed = 3.5;
+             // Route to player's predicted forward path if lights are on, if offline, wait entirely
+             if (flashLight.intensity < 50) {
+                 finalPlayerPos = { x: stalker.position.x, z: stalker.position.z }; // Wait in the dark
+                 currentStalkerSpeed = 0.5;
+             } else {
+                 const expectedPath = camera.position.clone().add(camForward.clone().multiplyScalar(15));
+                 finalPlayerPos = { x: expectedPath.x, z: expectedPath.z };
+                 currentStalkerSpeed = 3.5;
+             }
         } else if (dScore.mode === 'pursuit') {
-             finalPlayerPos = { x: camera.position.x, z: camera.position.z };
-             currentStalkerSpeed = 5.0;
+             // If light is off, player is hiding, stalker gets confused if far, or hones in
+             if (flashLight.intensity < 50 && distToPlayer > 8) {
+                 finalPlayerPos = { x: camera.position.x + (Math.random()-0.5)*20, z: camera.position.z + (Math.random()-0.5)*20 }; // Searching randomly around
+                 currentStalkerSpeed = 3.0; // Slow down
+             } else {
+                 finalPlayerPos = { x: camera.position.x, z: camera.position.z };
+                 currentStalkerSpeed = 5.0; // Aggressive
+             }
         }
 
         // Overrides
