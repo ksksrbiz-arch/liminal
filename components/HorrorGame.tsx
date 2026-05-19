@@ -34,7 +34,10 @@ const POSSIBLE_ARTIFACTS = [
     { id: "a2", name: "Children's Shoe", message: "A pristine, single children's sneaker. It's inexplicably warm to the touch.", color: 0x8b5a2b, shape: "box", type: "artifact", effect: 0.15 },
     { id: "a3", name: "Employee Badge", message: "The photo is scratched out. The name reads: YOUR NAME.", color: 0x550000, shape: "tetra", type: "artifact", effect: 0.25 },
     { id: "a4", name: "Ripped Journal Page", message: "It only moves when you can't hear it. Wait... or is it when you CAN hear it?", color: 0xdddddd, shape: "cylinder", type: "artifact", effect: 0.2 },
-    { id: "a5", name: "Bent Syringe", message: "The needle is bent. The thick black fluid inside is still rhythmically pulsing.", color: 0xaaaaaa, shape: "cylinder", type: "artifact", effect: 0.15 }
+    { id: "a5", name: "Bent Syringe", message: "The needle is bent. The thick black fluid inside is still rhythmically pulsing.", color: 0xaaaaaa, shape: "cylinder", type: "artifact", effect: 0.15 },
+    { id: "a6", name: "Cracked Reading Glass", message: "One lens is missing. The other shows a bloody thumbprint on the inside.", color: 0x334455, shape: "tetra", type: "artifact", effect: 0.15 },
+    { id: "a7", name: "Mangled Wedding Band", message: "The gold is twisted as if crushed by extreme pressure. An inscription reads 'Forever'.", color: 0xffd700, shape: "cylinder", type: "artifact", effect: 0.2 },
+    { id: "a8", name: "Water-Damaged Wallet", message: "The ID photo has melted into a featureless smudge. The cash inside is entirely black.", color: 0x3a2e21, shape: "box", type: "artifact", effect: 0.1 }
 ];
 
 const POSSIBLE_CALLS = [
@@ -260,6 +263,14 @@ export default function HorrorGame() {
     scene.background = fogColor;
     scene.fog = new THREE.FogExp2(fogColor, 0.12); 
 
+    const textureLoader = new THREE.TextureLoader();
+    const phantomTex = textureLoader.load('/assets/phantom_face_1779155661032.png');
+    const stalkerTex = textureLoader.load('/assets/stalker_skin_1779155620434.png');
+    const decalTex = textureLoader.load('/assets/paranoia_decal_1779155637969.png');
+    const dragMarksTex = textureLoader.load('/assets/drag_marks.png');
+    const wallScratchesTex = textureLoader.load('/assets/wall_scratches.png');
+    const bloodPoolTex = textureLoader.load('/assets/blood_pool.png');
+
 
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 100);
     camera.position.y = 1.4; 
@@ -401,8 +412,8 @@ export default function HorrorGame() {
     });
 
     // --- Phantom Hallucination Mesh ---
-    const phantomGeo = new THREE.CylinderGeometry(0.3, 0.3, 2.2, 8);
-    const phantomMat = new THREE.MeshBasicMaterial({ color: 0x010101, transparent: true, opacity: 0.9, fog: true });
+    const phantomGeo = new THREE.PlaneGeometry(1.5, 1.5);
+    const phantomMat = new THREE.MeshBasicMaterial({ map: phantomTex, transparent: true, opacity: 0.9, fog: true, color: 0xffffff, side: THREE.DoubleSide });
     const phantomMesh = new THREE.Mesh(phantomGeo, phantomMat);
     phantomMesh.visible = false;
     scene.add(phantomMesh);
@@ -1170,6 +1181,21 @@ export default function HorrorGame() {
     const wallGeoMid = new THREE.BoxGeometry(unit, 2.5, unit);
     const wallGeoLow = new THREE.PlaneGeometry(unit, 2.5);
 
+    const clothingGeo = new THREE.IcosahedronGeometry(0.3, 2);
+    const pos = clothingGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+        const y = pos.getY(i);
+        // Flatten bottom and add wrinkles
+        if (y < 0) {
+            pos.setY(i, y * 0.2);
+        } else {
+            pos.setY(i, y + Math.sin(pos.getX(i)*10)*0.05);
+            pos.setZ(i, pos.getZ(i) + Math.cos(pos.getY(i)*15)*0.05);
+        }
+    }
+    clothingGeo.computeVertexNormals();
+    const clothingMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.0 });
+
     const glassGeo = new THREE.BoxGeometry(unit, 2.5, 0.1);
     const glassMat = new THREE.MeshPhysicalMaterial({
         color: 0xaaccff,
@@ -1217,26 +1243,35 @@ export default function HorrorGame() {
                 scene.add(lod);
                 
                 // Add Paranoia Decals on walls
-                if (Math.random() < 0.15) {
-                    const decalGeo = new THREE.PlaneGeometry(1.5, 1.5);
-                    const decalMat = new THREE.MeshBasicMaterial({ color: 0x2e0000, transparent: true, opacity: 0, depthWrite: false, blending: THREE.MultiplyBlending });
+                if (Math.random() < 0.25) {
+                    const isScratch = Math.random() < 0.5;
+                    const decalGeo = new THREE.PlaneGeometry(isScratch ? 2.5 : 1.5, isScratch ? 1.0 : 1.5);
+                    const decalMat = new THREE.MeshBasicMaterial({ 
+                        map: isScratch ? wallScratchesTex : decalTex, 
+                        color: isScratch ? 0x220000 : 0x990000, 
+                        transparent: true, opacity: 0, depthWrite: false, 
+                        blending: isScratch ? THREE.MultiplyBlending : THREE.MultiplyBlending, // scratches can just multiply
+                        premultipliedAlpha: true
+                    });
                     const decalMesh = new THREE.Mesh(decalGeo, decalMat);
+                    decalMesh.userData = { type: isScratch ? 'scratch' : 'blood' };
                     
                     let decalSpawned = false;
+                    const yPos = isScratch ? 1.6 : 1.25; // Scratches near eye level
                     if (x > 0 && maze[x-1][y] === 0) {
-                        decalMesh.position.set(x * unit - unit/2 + 0.01, 1.25, y * unit);
+                        decalMesh.position.set(x * unit - unit/2 + 0.01, yPos, y * unit);
                         decalMesh.rotation.y = -Math.PI / 2;
                         decalSpawned = true;
                     } else if (x < mazeSize -1 && maze[x+1][y] === 0) {
-                        decalMesh.position.set(x * unit + unit/2 - 0.01, 1.25, y * unit);
+                        decalMesh.position.set(x * unit + unit/2 - 0.01, yPos, y * unit);
                         decalMesh.rotation.y = Math.PI / 2;
                         decalSpawned = true;
                     } else if (y > 0 && maze[x][y-1] === 0) {
-                        decalMesh.position.set(x * unit, 1.25, y * unit - unit/2 + 0.01);
+                        decalMesh.position.set(x * unit, yPos, y * unit - unit/2 + 0.01);
                         decalMesh.rotation.y = Math.PI;
                         decalSpawned = true;
                     } else if (y < mazeSize - 1 && maze[x][y+1] === 0) {
-                        decalMesh.position.set(x * unit, 1.25, y * unit + unit/2 - 0.01);
+                        decalMesh.position.set(x * unit, yPos, y * unit + unit/2 - 0.01);
                         decalMesh.rotation.y = 0;
                         decalSpawned = true;
                     }
@@ -1250,6 +1285,24 @@ export default function HorrorGame() {
                 const box = new THREE.Box3().setFromObject(midMesh); // use mid for simple box calc
                 boundingBoxes.push(box);
             } else {
+                // Add floor decals (drag marks or blood pools)
+                if (Math.random() < 0.1) {
+                    const isDragMark = Math.random() < 0.5;
+                    const floorDecalGeo = new THREE.PlaneGeometry(isDragMark ? 3.0 : 2.0, isDragMark ? 3.0 : 2.0);
+                    const floorDecalMat = new THREE.MeshBasicMaterial({ 
+                        map: isDragMark ? dragMarksTex : bloodPoolTex, 
+                        color: isDragMark ? 0x222222 : 0x330000, 
+                        transparent: true, opacity: isDragMark ? 0.3 : 0.6, depthWrite: false, 
+                        blending: THREE.MultiplyBlending,
+                        premultipliedAlpha: true
+                    });
+                    const floorDecalMesh = new THREE.Mesh(floorDecalGeo, floorDecalMat);
+                    floorDecalMesh.position.set(x * unit + (Math.random() - 0.5), 0.02, y * unit + (Math.random() - 0.5));
+                    floorDecalMesh.rotation.x = -Math.PI / 2;
+                    floorDecalMesh.rotation.z = Math.random() * Math.PI * 2;
+                    scene.add(floorDecalMesh);
+                }
+
                 if (Math.random() > 0.05 && Math.random() < 0.12 && (x !== 1 && y !== 1)) {
                     // Frost Glass Panes (barriers)
                     const glass = new THREE.Mesh(glassGeo, glassMat);
@@ -1268,6 +1321,12 @@ export default function HorrorGame() {
                         m.compose(p, q, s);
                         debrisPositions.push(m);
                     }
+                } else if (Math.random() > 0.95 && (x !== 1 && y !== 1)) {
+                    // Added clothing
+                    const clothingMesh = new THREE.Mesh(clothingGeo, clothingMat);
+                    clothingMesh.position.set(x * unit + (Math.random()-0.5)*unit*0.6, 0.05, y * unit + (Math.random()-0.5)*unit*0.6);
+                    clothingMesh.rotation.y = Math.random() * Math.PI;
+                    scene.add(clothingMesh);
                 }
                 if (Math.random() > 0.9) {
                     leakPositions.push(new THREE.Vector3(x*unit + (Math.random()-0.5)*2, 3.5, y*unit + (Math.random()-0.5)*2));
@@ -1584,7 +1643,7 @@ export default function HorrorGame() {
 
     // --- The Stalker (Entity) ---
     const entityGeo = new THREE.CylinderGeometry(0.5, 0.3, 3, 16);
-    const entityMat = new THREE.MeshStandardMaterial({ color: 0x000000, roughness: 1.0 });
+    const entityMat = new THREE.MeshStandardMaterial({ map: stalkerTex, roughness: 0.8, metalness: 0.2 });
     const stalker = new THREE.Mesh(entityGeo, entityMat);
     // Start stalker far away in the maze
     stalker.position.set((mazeSize - 2) * unit, 1.5, (mazeSize - 2) * unit);
@@ -2102,10 +2161,15 @@ export default function HorrorGame() {
       paranoiaRef.current = Math.max(0, Math.min(1, paranoiaRef.current));
       
       // Update Decals
-      const targetDecalOpacity = paranoiaRef.current > 0.5 ? (paranoiaRef.current - 0.5) * 2.0 : 0;
       decalsRef.current.forEach(decal => {
           const mat = decal.material as THREE.MeshBasicMaterial;
-          mat.opacity += (targetDecalOpacity - mat.opacity) * 0.05;
+          if (decal.userData.type === 'scratch') {
+              const targetOpacity = paranoiaRef.current > 0.6 ? (paranoiaRef.current - 0.6) * 2.5 : 0;
+              mat.opacity += (targetOpacity - mat.opacity) * 0.05;
+          } else {
+              const targetOpacity = paranoiaRef.current > 0.5 ? (paranoiaRef.current - 0.5) * 2.0 : 0;
+              mat.opacity += (targetOpacity - mat.opacity) * 0.05;
+          }
       });
 
       // Ambient Soundscapes updating
@@ -2165,6 +2229,9 @@ export default function HorrorGame() {
       camera.updateProjectionMatrix();
 
       // Phantom visual hallucination
+      if (phantomMesh.visible) {
+          phantomMesh.lookAt(camera.position);
+      }
       if (paranoiaRef.current > 0.6 && !phantomMesh.visible && Math.random() < 0.005) {
           const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
           // Spawn in front of the player randomly
