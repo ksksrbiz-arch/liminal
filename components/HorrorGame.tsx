@@ -6,6 +6,7 @@ import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockCont
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
+import { SSAOPass } from 'three/examples/jsm/postprocessing/SSAOPass.js';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { auth, db } from '../lib/firebase';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
@@ -303,6 +304,13 @@ export default function HorrorGame() {
     const renderPass = new RenderPass(scene, camera);
     composer.addPass(renderPass);
 
+    const ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    ssaoPass.kernelRadius = 0.5; // tightened radius for crevices
+    ssaoPass.minDistance = 0.0005;
+    ssaoPass.maxDistance = 0.05;
+    ssaoPass.output = SSAOPass.OUTPUT.Default;
+    composer.addPass(ssaoPass);
+
     const DreadShader = {
         defines: {
             "MOBILE": isDeviceMobile ? 1 : 0
@@ -355,7 +363,8 @@ export default function HorrorGame() {
                 }
                 
                 // 2. Dynamic Chromatic Aberration
-                float caOffset = 0.005 * distortionIntensity; 
+                float nonLinearDistortion = pow(max(0.0, distortionIntensity - 0.5), 2.0) * 0.4;
+                float caOffset = 0.005 * nonLinearDistortion; 
                 if (flickerState > 0.5) { // Flashlight glitch spike
                      caOffset += (random(uv + time) * 0.02);
                 }
@@ -374,13 +383,16 @@ export default function HorrorGame() {
                 }
 
                 // 3. Vignette Pulse 
-                // Heartbeat driven vignette bounding the edges
+                // Heartbeat driven vignette bounding the edges, not encroaching on inner 40%
                 float dist = distance(vUv, vec2(0.5)); // use original UV
-                float pulse = sin(time * 6.0) * 0.5 + 0.5; // Heartbeat-esque pulse rate
-                // Base vignette + extra darkness scaling with distortion and heartbeat pulse
-                float vignette = smoothstep(0.8, 0.3 + (pulse * 0.1 * distortionIntensity), dist * (1.0 + distortionIntensity * 0.5));
+                float pulse = sin(time * 6.0) * 0.5 + 0.5; 
                 
-                finalColor.rgb *= vignette;
+                // Modular alpha-mask to protect central 40% (dist < 0.2)
+                float mask = smoothstep(0.2, 0.5, dist);
+                
+                // Base vignette
+                float vignetteDarkness = mask * (0.3 + pulse * 0.2 * nonLinearDistortion);
+                finalColor.rgb *= (1.0 - vignetteDarkness);
                 
                 #endif
 
@@ -413,7 +425,16 @@ export default function HorrorGame() {
 
     // --- Phantom Hallucination Mesh ---
     const phantomGeo = new THREE.PlaneGeometry(1.5, 1.5);
-    const phantomMat = new THREE.MeshBasicMaterial({ map: phantomTex, transparent: true, opacity: 0.9, fog: true, color: 0xffffff, side: THREE.DoubleSide });
+    const phantomMat = new THREE.MeshBasicMaterial({ 
+        map: phantomTex, 
+        transparent: true, 
+        opacity: 0.9, 
+        fog: true, 
+        color: 0xffffff, 
+        side: THREE.DoubleSide,
+        depthWrite: false, // Ensures it doesn't bleed through geometry
+        depthTest: true
+    });
     const phantomMesh = new THREE.Mesh(phantomGeo, phantomMat);
     phantomMesh.visible = false;
     scene.add(phantomMesh);
@@ -490,10 +511,10 @@ export default function HorrorGame() {
         return texture;
     };
 
-    const ceilingTex = createNoiseTexture('#1a1a1a', '#0a0a0a', 32, false);
+    const ceilingTex = createNoiseTexture('#1a1a1a', '#0a0a0a', 512, false);
 
     const createAdvancedWallTextures = () => {
-        const resolution = 256;
+        const resolution = 1024;
         const canvasDiffuse = document.createElement('canvas');
         const canvasRough = document.createElement('canvas');
         const canvasBump = document.createElement('canvas'); // Used to generate the Normal Map
@@ -827,13 +848,44 @@ export default function HorrorGame() {
         return { diffuseTex, roughTex, normalTex };
     };
 
-    const advancedWall = generateCrumblingConcreteTexture(isDeviceMobile ? 512 : 1024);
+    const advancedWall = generateCrumblingConcreteTexture(isDeviceMobile ? 1024 : 2048);
     const wallTex = advancedWall.diffuseTex;
     const wallRoughTex = advancedWall.roughTex;
     const wallNormalTex = advancedWall.normalTex;
 
+    const createGrungeTexture = () => {
+        const resolution = 512;
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = resolution;
+        const ctx = canvas.getContext('2d')!;
+        const noise = createAdvancedFractalNoise(resolution, { octaves: 4, persistence: 0.6 });
+        const img = ctx.createImageData(resolution, resolution);
+        
+        for (let i = 0; i < resolution * resolution; i++) {
+            const val = noise[i];
+            const distX = (i % resolution) / resolution - 0.5;
+            const distY = Math.floor(i / resolution) / resolution - 0.5;
+            const dist = Math.sqrt(distX*distX + distY*distY) * 2.0;
+
+            const edgeFade = Math.max(0, 1.0 - Math.pow(dist, 2.0));
+            // Create a water-stain ring pattern: dark on edges of the blob
+            let alpha = Math.max(0, val * edgeFade * 255);
+            if(alpha > 150) alpha *= 0.5; // inner part is lighter
+            
+            img.data[i * 4] = 255;
+            img.data[i * 4 + 1] = 255;
+            img.data[i * 4 + 2] = 255;
+            img.data[i * 4 + 3] = alpha;
+        }
+        ctx.putImageData(img, 0, 0);
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        return tex;
+    };
+    const corrosionTex = createGrungeTexture();
+
     const createAdvancedFloorTextures = (tileSize: number) => {
-        const resolution = 256;
+        const resolution = 1024;
         const canvasDiffuse = document.createElement('canvas');
         const canvasRough = document.createElement('canvas');
         const canvasBump = document.createElement('canvas');
@@ -1281,6 +1333,42 @@ export default function HorrorGame() {
                         decalsRef.current.push(decalMesh);
                     }
                 }
+
+                // Add Corrosion/Grunge Environmental Decals
+                if (Math.random() < 0.3) {
+                    const grungeGeo = new THREE.PlaneGeometry(3, 3);
+                    const grungeMat = new THREE.MeshBasicMaterial({
+                        map: corrosionTex,
+                        color: 0x111111,
+                        transparent: true,
+                        opacity: 0.65,
+                        depthWrite: false,
+                        blending: THREE.MultiplyBlending,
+                        premultipliedAlpha: true
+                    });
+                    const grungeMesh = new THREE.Mesh(grungeGeo, grungeMat);
+                    let grungeSpawned = false;
+                    
+                    if (x > 0 && maze[x-1][y] === 0) {
+                        grungeMesh.position.set(x * unit - unit/2 + 0.015, 1.5, y * unit);
+                        grungeMesh.rotation.y = -Math.PI / 2;
+                        grungeSpawned = true;
+                    } else if (x < mazeSize -1 && maze[x+1][y] === 0) {
+                        grungeMesh.position.set(x * unit + unit/2 - 0.015, 1.5, y * unit);
+                        grungeMesh.rotation.y = Math.PI / 2;
+                        grungeSpawned = true;
+                    } else if (y > 0 && maze[x][y-1] === 0) {
+                        grungeMesh.position.set(x * unit, 1.5, y * unit - unit/2 + 0.015);
+                        grungeMesh.rotation.y = Math.PI;
+                        grungeSpawned = true;
+                    } else if (y < mazeSize - 1 && maze[x][y+1] === 0) {
+                        grungeMesh.position.set(x * unit, 1.5, y * unit + unit/2 - 0.015);
+                        grungeMesh.rotation.y = 0;
+                        grungeSpawned = true;
+                    }
+
+                    if (grungeSpawned) scene.add(grungeMesh);
+                }
                 
                 const box = new THREE.Box3().setFromObject(midMesh); // use mid for simple box calc
                 boundingBoxes.push(box);
@@ -1576,13 +1664,38 @@ export default function HorrorGame() {
 
     // --- Debris & Leaks & Biological Matter ---
     if (debrisPositions.length > 0) {
-        const debrisGeo = new THREE.BoxGeometry(1, 1, 1);
-        const debrisMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1.0, metalness: 0.1 });
-        const debrisMesh = new THREE.InstancedMesh(debrisGeo, debrisMat, debrisPositions.length);
-        debrisMesh.castShadow = true;
-        debrisMesh.receiveShadow = true;
-        debrisPositions.forEach((m, i) => debrisMesh.setMatrixAt(i, m));
-        scene.add(debrisMesh);
+        // Shard (Ceramic)
+        const shardGeo = new THREE.TetrahedronGeometry(0.5);
+        const shardMat = new THREE.MeshStandardMaterial({ color: 0xddddcc, roughness: 0.9, metalness: 0.1 });
+        const shardMesh = new THREE.InstancedMesh(shardGeo, shardMat, debrisPositions.length);
+        shardMesh.castShadow = true; shardMesh.receiveShadow = true;
+        
+        // Rebar (Metal)
+        const rebarGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.5, 4);
+        const rebarMat = new THREE.MeshStandardMaterial({ color: 0x332211, roughness: 0.8, metalness: 0.5 });
+        const rebarMesh = new THREE.InstancedMesh(rebarGeo, rebarMat, debrisPositions.length);
+        rebarMesh.castShadow = true; rebarMesh.receiveShadow = true;
+
+        let shardsCount = 0;
+        let rebarsCount = 0;
+        
+        debrisPositions.forEach((m) => {
+            const tempM = m.clone();
+            const jitterScale = new THREE.Vector3(1, 1, 1).multiplyScalar(0.5 + Math.random() * 0.8);
+            tempM.scale(jitterScale);
+
+            if (Math.random() > 0.4) {
+                shardMesh.setMatrixAt(shardsCount++, tempM);
+            } else {
+                rebarMesh.setMatrixAt(rebarsCount++, tempM);
+            }
+        });
+        
+        shardMesh.count = shardsCount;
+        rebarMesh.count = rebarsCount;
+        
+        scene.add(shardMesh);
+        scene.add(rebarMesh);
         
         // Biological/Organ matter splatters
         const organicMat = new THREE.MeshStandardMaterial({ color: 0x4a0000, roughness: 0.2, metalness: 0.4 });
@@ -1787,6 +1900,17 @@ export default function HorrorGame() {
         groanDistortion.connect(ambientGroanGain);
         ambientGroanGain.connect(masterGain);
         ambientGroanOsc.start();
+
+        // Heartbeat Sound Setup
+        heartbeatOsc = audioCtx.createOscillator();
+        heartbeatOsc.type = 'sine';
+        heartbeatOsc.frequency.value = 40; // Low thump
+        const heartbeatGain = audioCtx.createGain();
+        heartbeatGain.gain.value = 0;
+        heartbeatOsc.connect(heartbeatGain);
+        heartbeatGain.connect(masterGain);
+        heartbeatOsc.start();
+        (window as any).heartbeatGain = heartbeatGain;
 
         // Listener setup setup
         const listener = audioCtx.listener;
@@ -2020,26 +2144,28 @@ export default function HorrorGame() {
 
     // --- Dust Particles ---
     const dustCount = 1500;
-    const dustGeo = new THREE.BufferGeometry();
-    const dustPos = new Float32Array(dustCount * 3);
+    const dustGeo = new THREE.TetrahedronGeometry(0.02);
+    const dustMat = new THREE.MeshStandardMaterial({
+        color: 0xddddcc,
+        roughness: 0.6,
+        transparent: true,
+        opacity: 0.8,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+    });
+    const dustParticles = new THREE.InstancedMesh(dustGeo, dustMat, dustCount);
     const dustPhases = new Float32Array(dustCount);
+    const dustPos = new Float32Array(dustCount * 3);
+    const m = new THREE.Matrix4();
     for (let i = 0; i < dustCount; i++) {
         dustPos[i*3] = Math.random() * mazeSize * unit;
         dustPos[i*3+1] = Math.random() * 3.5;
         dustPos[i*3+2] = Math.random() * mazeSize * unit;
         dustPhases[i] = Math.random() * Math.PI * 2;
+        m.setPosition(dustPos[i*3], dustPos[i*3+1], dustPos[i*3+2]);
+        dustParticles.setMatrixAt(i, m);
     }
-    dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
-    dustGeo.setAttribute('phase', new THREE.BufferAttribute(dustPhases, 1));
-    const dustMat = new THREE.PointsMaterial({
-        color: 0xaaaa99,
-        size: 0.04,
-        transparent: true,
-        opacity: 0.4,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false
-    });
-    const dustParticles = new THREE.Points(dustGeo, dustMat);
+    dustParticles.instanceMatrix.needsUpdate = true;
     scene.add(dustParticles);
 
     // --- Precision Asset Pre-Warming ---
@@ -2193,8 +2319,7 @@ export default function HorrorGame() {
                    ambientWhisperOsc.frequency.setTargetAtTime(50 + (Math.random() * paranoiaRef.current * 200), t, 0.1);
               }
           }
-          
-          // Dripping Water: sudden short sine sweeps (plips) independent but frequency scales with tension
+                   // Dripping Water: sudden short sine sweeps (plips) independent but frequency scales with tension
           ambientDripTimer += delta;
           const dripThreshold = 2.0 - (paranoiaRef.current * 1.5);
           if (ambientDripTimer > dripThreshold && Math.random() < 0.05) {
@@ -2220,12 +2345,26 @@ export default function HorrorGame() {
                if (masterGain) dripPanner.connect(masterGain);
                
                dripOsc.start(t);
-               dripOsc.stop(t + 0.2);
+               dripOsc.stop(t + 0.3);
+          }
+
+          // Heartbeat matching new visual balance
+          const hGain = (window as any).heartbeatGain as GainNode;
+          if (hGain && heartbeatOsc) {
+              const bpm = 60 + (paranoiaRef.current * 80);
+              const beatFreq = bpm / 60.0;
+              const pulse = Math.pow(Math.max(0, Math.sin(t * Math.PI * beatFreq * 2.0)), 4.0);
+              // Only audible when paranoia > 0.5, peaking at high tension
+              const targetHeartVol = paranoiaRef.current > 0.5 ? (paranoiaRef.current - 0.5) * 0.4 * pulse : 0.0;
+              hGain.gain.setTargetAtTime(targetHeartVol, t, 0.05);
           }
       }
 
-      // Camera FOV warping (Loss of Control / Physiological response)
-      camera.fov = 75 + Math.sin(time / 200) * (paranoiaRef.current * 10);
+      // Camera FOV warping (Loss of Control / Physiological response - Breathing Pulse)
+      const baseFov = 75;
+      const breathingRate = 1.0 + (paranoiaRef.current * 2.0); // Breathes faster with higher paranoia
+      const fovPulse = Math.sin(time * 0.003 * breathingRate) * (paranoiaRef.current * 5.0); // Intensity scales with paranoia
+      camera.fov = baseFov + fovPulse;
       camera.updateProjectionMatrix();
 
       // Phantom visual hallucination
@@ -2304,18 +2443,19 @@ export default function HorrorGame() {
       }
 
       // Dust Particles Animation
-      const dPositions = (dustParticles.geometry as THREE.BufferGeometry).attributes.position.array as Float32Array;
-      const dPhases = (dustParticles.geometry as THREE.BufferGeometry).attributes.phase.array as Float32Array;
+      const _m = new THREE.Matrix4();
       for (let i = 0; i < dustCount; i++) {
           const idx = i * 3;
-          dPositions[idx + 1] += Math.sin(time / 1000 + dPhases[i]) * 0.002 + 0.001;
-          if (dPositions[idx + 1] > 3.5) {
-              dPositions[idx + 1] = 0; // Wrap around height
+          dustPos[idx + 1] += Math.sin(time / 1000 + dustPhases[i]) * 0.002 + 0.001;
+          if (dustPos[idx + 1] > 3.5) {
+              dustPos[idx + 1] = 0; // Wrap around height
           }
-          dPositions[idx] += Math.sin(time / 2000 + dPhases[i]) * 0.002;
-          dPositions[idx + 2] += Math.cos(time / 1500 + dPhases[i]) * 0.002;
+          dustPos[idx] += Math.sin(time / 2000 + dustPhases[i]) * 0.002;
+          dustPos[idx + 2] += Math.cos(time / 1500 + dustPhases[i]) * 0.002;
+          _m.setPosition(dustPos[idx], dustPos[idx + 1], dustPos[idx + 2]);
+          dustParticles.setMatrixAt(i, _m);
       }
-      (dustParticles.geometry as THREE.BufferGeometry).attributes.position.needsUpdate = true;
+      dustParticles.instanceMatrix.needsUpdate = true;
       
       // Water / Leak Animation
       if (waterParticles) {
@@ -2704,6 +2844,7 @@ export default function HorrorGame() {
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
       composer.setSize(window.innerWidth, window.innerHeight);
+      ssaoPass.setSize(window.innerWidth, window.innerHeight);
       if (fxaaPass) {
           const pixelRatio = renderer.getPixelRatio();
           fxaaPass.material.uniforms['resolution'].value.x = 1 / (window.innerWidth * pixelRatio);
