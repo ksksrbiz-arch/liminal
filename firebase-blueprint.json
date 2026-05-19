@@ -1,0 +1,33 @@
+{
+  "entities": {
+    "SaveData": {
+      "title": "Save Data",
+      "description": "User's save progress in the game",
+      "type": "object",
+      "properties": {
+        "notesFound": {
+          "type": "array",
+          "description": "List of note IDs the user has found",
+          "items": { "type": "string" }
+        },
+        "drawersOpened": {
+          "type": "array",
+          "description": "List of drawer IDs the user has opened",
+          "items": { "type": "string" }
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "timestamp",
+          "description": "When the save was last updated"
+        }
+      },
+      "required": ["updatedAt"]
+    }
+  },
+  "firestore": {
+    "users/{userId}/save/data": {
+      "schema": { "$ref": "#/entities/SaveData" },
+      "description": "Stores user save data for the maze"
+    }
+  }
+}
