@@ -11,14 +11,13 @@ import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { doc, getDoc, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
 
 const POSSIBLE_NOTES = [
-    "I can hear it breathing. It doesn't use the doors.",
-    "Don't look at the walls for too long.",
-    "It mimics their voices.",
-    "The layout changes when you blink.",
-    "I've been running for three days. The corridors are identical.",
-    "If you find this, turn back. There is no exit.",
-    "I swear I heard my own footsteps behind me.",
-    "The air is getting colder here."
+    "It wears the faces of the people it takes. I saw my own face.",
+    "Don't look at the walls for too long. They blink back.",
+    "It understands human anatomy perfectly, but it enjoys putting us back together wrong.",
+    "The layout changes when you blink. We are not inside a building.",
+    "I've been descending these stairs for days. The numbers keep going up.",
+    "If you hear it breathing, DO NOT MOVE.",
+    "It doesn't want to kill us. It wants to learn how to be us."
 ];
 
 export type InteractableItem = {
@@ -29,23 +28,23 @@ export type InteractableItem = {
 };
 
 const POSSIBLE_ARTIFACTS = [
-    { id: "a1", name: "Shattered Tape Recorder", message: "Voice log: '...it mimics the rescue team perfectly. Don't answer...'", color: 0x2a2a2a, shape: "box" },
-    { id: "a2", name: "Child's Toy Block", message: "A wooden block with a strange rune burned into it. It feels slightly warm.", color: 0x8b5a2b, shape: "box" },
-    { id: "a3", name: "Bloody ID Badge", message: "Dr. Aris Thorne. The photo is scratched out entirely.", color: 0x550000, shape: "tetra" },
-    { id: "a4", name: "Melted Flashlight", message: "The batteries aren't just dead, they're completely crystallized.", color: 0x555555, shape: "cylinder" },
-    { id: "a5", name: "Surgical Scalpel", message: "It's clean. Too clean. It hums when you hold it to your ear.", color: 0xaaaaaa, shape: "cylinder" }
+    { id: "a1", name: "Shattered Tape Recorder", message: "Voice log: '...it's not a mimic. It's an echo. It replays their last moments...'", color: 0x2a2a2a, shape: "box" },
+    { id: "a2", name: "Children's Shoe", message: "A pristine, single children's sneaker. It's inexplicably warm to the touch.", color: 0x8b5a2b, shape: "box" },
+    { id: "a3", name: "Employee Badge", message: "The photo is scratched out. The name reads: YOUR NAME.", color: 0x550000, shape: "tetra" },
+    { id: "a4", name: "Ripped Journal Page", message: "It only moves when you can't hear it. Wait... or is it when you CAN hear it?", color: 0xdddddd, shape: "cylinder" },
+    { id: "a5", name: "Bent Syringe", message: "The needle is bent. The thick black fluid inside is still rhythmically pulsing.", color: 0xaaaaaa, shape: "cylinder" }
 ];
 
 const POSSIBLE_CALLS = [
-    { id: "c1", name: "Missed Call", message: "STATIC... 'Don't let it see your face.' ...STATIC" },
-    { id: "c2", name: "Missed Call", message: "'Can you hear me? We are trapped in Sector 4. The lights...'" },
-    { id: "c3", name: "Missed Call", message: "Heavy breathing, followed by a wet tearing sound." }
+    { id: "c1", name: "Missed Call", message: "'Can you hear me? Please, don't open the door. We know you're in there.'" },
+    { id: "c2", name: "Missed Call", message: "(Heavy metallic scraping, followed by your own voice)... Found you. ...(click)" },
+    { id: "c3", name: "Missed Call", message: "'Hello? Is anyone there? It's so dark... wait, what is that? NO, NO—'" }
 ];
 
 const POSSIBLE_MEMORIES = [
-    { id: "m1", name: "Fragmented Memory", message: "LOG 492: The geometry here shifts when unobserved. We lost Jenkins to a hallway that wasn't there yesterday." },
-    { id: "m2", name: "Fragmented Memory", message: "LOG 501: It's adapting. It learned to sound like my daughter. I don't have a daughter." },
-    { id: "m3", name: "Fragmented Memory", message: "LOG 512: The breaker boxes are failing. Keeping the lights on seems to aggravate it. But the dark..." }
+    { id: "m1", name: "Fragmented Memory", message: "LOG 492: The walls are bleeding again. We're running out of buckets." },
+    { id: "m2", name: "Fragmented Memory", message: "LOG 501: It spoke today. It used my mother's voice. She's been dead for ten years." },
+    { id: "m3", name: "Fragmented Memory", message: "INTERVIEW TRANSCRIPT: 'It doesn't bite. It just... unfolds... and then you're inside it.'" }
 ];
 
 export default function HorrorGame() {
@@ -69,6 +68,19 @@ export default function HorrorGame() {
   const [savedNotes, setSavedNotes] = useState<string[]>([]);
   const [showNotesMenu, setShowNotesMenu] = useState(false);
   const envStatesRef = useRef<Record<string, any>>({});
+  const paranoiaRef = useRef(0);
+  const nextHallucinationTimeRef = useRef(0);
+  const stalkerDirectorRef = useRef({
+      mode: 'absence' as 'gaslight' | 'ambush' | 'absence' | 'pursuit',
+      modeDurationMs: 15000,
+      modeStartTime: 0,
+      playerPacingScore: 0, 
+      lookingBackScore: 0,
+      targetPos: new THREE.Vector3()
+  });
+  const stalkingDataRef = useRef({
+      lastCamForward: new THREE.Vector3(0, 0, -1)
+  });
 
   const [isMobileMode, setIsMobileMode] = useState<boolean>(
      typeof window !== 'undefined' ? (window.innerWidth < 768 || 'ontouchstart' in window) : false
@@ -312,6 +324,13 @@ export default function HorrorGame() {
 
     controls.addEventListener('lock', () => setIsLocked(true));
     controls.addEventListener('unlock', () => setIsLocked(false));
+
+    // --- Phantom Hallucination Mesh ---
+    const phantomGeo = new THREE.CylinderGeometry(0.3, 0.3, 2.2, 8);
+    const phantomMat = new THREE.MeshBasicMaterial({ color: 0x010101, transparent: true, opacity: 0.9, fog: true });
+    const phantomMesh = new THREE.Mesh(phantomGeo, phantomMat);
+    phantomMesh.visible = false;
+    scene.add(phantomMesh);
 
     // --- Lighting ---
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); 
@@ -1114,7 +1133,7 @@ export default function HorrorGame() {
         }
     }
 
-    // --- Debris & Leaks ---
+    // --- Debris & Leaks & Biological Matter ---
     if (debrisPositions.length > 0) {
         const debrisGeo = new THREE.BoxGeometry(1, 1, 1);
         const debrisMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 1.0, metalness: 0.1 });
@@ -1123,6 +1142,32 @@ export default function HorrorGame() {
         debrisMesh.receiveShadow = true;
         debrisPositions.forEach((m, i) => debrisMesh.setMatrixAt(i, m));
         scene.add(debrisMesh);
+        
+        // Biological/Organ matter splatters
+        const organicMat = new THREE.MeshStandardMaterial({ color: 0x4a0000, roughness: 0.2, metalness: 0.4 });
+        const splatPositions = [];
+        for (let i = 0; i < 60; i++) {
+             const m = debrisPositions[Math.floor(Math.random() * debrisPositions.length)];
+             if (m) splatPositions.push(m);
+        }
+        if (splatPositions.length > 0) {
+             const organicGeo = new THREE.SphereGeometry(1.5, 8, 8);
+             const organicMesh = new THREE.InstancedMesh(organicGeo, organicMat, splatPositions.length);
+             splatPositions.forEach((m, i) => {
+                  const matrix = new THREE.Matrix4();
+                  const pos = new THREE.Vector3().setFromMatrixPosition(m);
+                  // Push to the floor or slightly above, maybe shift offcenter
+                  pos.y = 0.05 + Math.random() * 0.1; 
+                  pos.x += (Math.random() - 0.5) * 5;
+                  pos.z += (Math.random() - 0.5) * 5;
+                  
+                  const randomScale = new THREE.Vector3(0.5 + Math.random() * 2, 0.05 + Math.random() * 0.1, 0.5 + Math.random() * 2);
+                  const quat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * Math.PI);
+                  matrix.compose(pos, quat, randomScale);
+                  organicMesh.setMatrixAt(i, matrix);
+             });
+             scene.add(organicMesh);
+        }
     }
     
     let waterParticles: THREE.Points | null = null;
@@ -1532,7 +1577,8 @@ export default function HorrorGame() {
 
           // Fake Deception Audio Triggers
           if (deceptionPanner && deceptionGain && deceptionNoise) {
-              if (Math.random() < 0.005) { // 0.5% chance per frame to trigger a fake creak/thump
+              const fakeChance = stalkerDirectorRef.current.mode === 'gaslight' ? 0.03 : 0.005;
+              if (Math.random() < fakeChance) { 
                  deceptionPanner.positionX.value = camera.position.x + (Math.random() - 0.5) * 15;
                  deceptionPanner.positionY.value = camera.position.y;
                  deceptionPanner.positionZ.value = camera.position.z + (Math.random() - 0.5) * 15;
@@ -1551,15 +1597,82 @@ export default function HorrorGame() {
          if (Math.random() > 0.90) {
              flashLight.intensity = Math.random() * 50 + 10;
          } else {
-             flashLight.intensity = 300;
+             // In absence, lights are more likely to fail completely causing spikes in tension
+             if (stalkerDirectorRef.current.mode === 'absence' && Math.random() > 0.7) {
+                 flashLight.intensity = 0;
+             } else {
+                 flashLight.intensity = 300;
+             }
          }
          if (flickerTimer > 2.5) flickerTimer = 0;
       }
       
       const distToStalker = camera.position.distanceTo(stalker.position);
       
-      // Dynamic Fog Density
-      const fogDensityTarget = 0.12 + Math.max(0, (15 - distToStalker) / 15) * 0.1;
+      // Update Paranoia
+      if (distToStalker < 20) {
+          paranoiaRef.current += delta * 0.05;
+      } else if (flashLight.intensity < 100) {
+          paranoiaRef.current += delta * 0.03;
+      } else if (stalkerDirectorRef.current.mode === 'absence') {
+          // weaponized absence: tension builds up slowly due to silence
+          paranoiaRef.current += delta * 0.02;
+      } else {
+          paranoiaRef.current -= delta * 0.01;
+      }
+      paranoiaRef.current = Math.max(0, Math.min(1, paranoiaRef.current));
+
+      // Camera FOV warping (Loss of Control / Physiological response)
+      camera.fov = 75 + Math.sin(time / 200) * (paranoiaRef.current * 10);
+      camera.updateProjectionMatrix();
+
+      // Phantom visual hallucination
+      if (paranoiaRef.current > 0.6 && !phantomMesh.visible && Math.random() < 0.005) {
+          const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+          // Spawn in front of the player randomly
+          phantomMesh.position.copy(camera.position).add(forward.multiplyScalar(15 + Math.random() * 15));
+          phantomMesh.position.y = 1.1;
+          phantomMesh.visible = true;
+          
+          // Vanish quickly
+          setTimeout(() => { if (phantomMesh) phantomMesh.visible = false; }, Math.random() * 400 + 100);
+      }
+
+      // Occasional auditory hallucination based on paranoia
+      if (audioCtx && masterGain && paranoiaRef.current > 0.4 && time > nextHallucinationTimeRef.current) {
+          nextHallucinationTimeRef.current = time + 4000 + (Math.random() * 8000);
+          const osc = audioCtx.createOscillator();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(80 + Math.random() * 300, audioCtx.currentTime);
+          osc.frequency.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1);
+          
+          const panner = audioCtx.createPanner();
+          panner.panningModel = 'HRTF';
+          panner.distanceModel = 'inverse';
+          
+          // Spawn hallucination directly behind the player's head
+          const backVec = new THREE.Vector3(0, 0, 2);
+          backVec.applyQuaternion(camera.quaternion);
+          const hPos = camera.position.clone().add(backVec);
+          panner.positionX.value = hPos.x;
+          panner.positionY.value = hPos.y;
+          panner.positionZ.value = hPos.z;
+          
+          const gainNode = audioCtx.createGain();
+          gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+          gainNode.gain.linearRampToValueAtTime(paranoiaRef.current * 0.4, audioCtx.currentTime + 0.1);
+          gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1);
+          
+          osc.connect(gainNode);
+          gainNode.connect(panner);
+          panner.connect(masterGain);
+          
+          osc.start();
+          osc.stop(audioCtx.currentTime + 1);
+      }
+      
+      // Dynamic Fog Density based on proximity and paranoia
+      const fogDensityTarget = 0.12 + Math.max(0, (15 - distToStalker) / 15) * 0.1 + (paranoiaRef.current * 0.05);
       if (scene.fog instanceof THREE.FogExp2) {
           scene.fog.density += (fogDensityTarget - scene.fog.density) * delta * 2;
       }
@@ -1696,7 +1809,11 @@ export default function HorrorGame() {
              inputDirection.normalize(); 
         }
 
-        const speed = (moveState.run || isRunningJoystick) ? 6.0 : 2.5;
+        const baseSpeed = (moveState.run || isRunningJoystick) ? 6.0 : 2.5;
+        // Panic paralysis: high paranoia and close entity drastically reduces speed.
+        const stDist = camera.position.distanceTo(stalker.position);
+        const paralyzeFactor = (stDist < 12 && paranoiaRef.current > 0.6) ? 0.3 : 1.0;
+        const speed = baseSpeed * paralyzeFactor;
 
         if (inputDirection.z !== 0) velocity.z -= inputDirection.z * speed * 10.0 * delta;
         if (inputDirection.x !== 0) velocity.x -= inputDirection.x * speed * 10.0 * delta;
@@ -1733,6 +1850,49 @@ export default function HorrorGame() {
              if (audioCtx && filter) filter.frequency.value += (120 - filter.frequency.value) * 0.05;
         }
 
+        // --- Behavioral Profiling ---
+        const dScore = stalkerDirectorRef.current;
+        const sDirData = stalkingDataRef.current;
+        
+        if (moveState.run) dScore.playerPacingScore += delta * 2.0;
+        else if (moveState.forward || moveState.backward || moveState.left || moveState.right) dScore.playerPacingScore += delta * 1.0;
+        else dScore.playerPacingScore -= delta * 1.5;
+        dScore.playerPacingScore = Math.max(0, Math.min(100, dScore.playerPacingScore));
+
+        const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+        const lookAngle = sDirData.lastCamForward.angleTo(camForward);
+        if (lookAngle > 0.01) {
+            dScore.lookingBackScore += lookAngle * 10.0;
+        } else {
+            dScore.lookingBackScore -= delta * 5.0;
+        }
+        dScore.lookingBackScore = Math.max(0, Math.min(100, dScore.lookingBackScore));
+        sDirData.lastCamForward.copy(camForward);
+
+        if (time - dScore.modeStartTime > dScore.modeDurationMs) {
+            dScore.modeStartTime = time;
+            const metricsSum = dScore.playerPacingScore + dScore.lookingBackScore + paranoiaRef.current * 100;
+            
+            if (metricsSum < 40) {
+                // Player is calm and slow -> Aggressive Pursuit
+                dScore.mode = 'pursuit';
+                dScore.modeDurationMs = 8000 + Math.random() * 5000;
+            } else if (metricsSum > 220) {
+                // Player is highly anxious -> Weaponized Absence
+                dScore.mode = 'absence';
+                dScore.modeDurationMs = 15000 + Math.random() * 10000;
+            } else {
+                // Medium tension -> Gaslight or Ambush
+                if (Math.random() > 0.5) {
+                    dScore.mode = 'gaslight';
+                    dScore.modeDurationMs = 12000;
+                } else {
+                    dScore.mode = 'ambush';
+                    dScore.modeDurationMs = 15000;
+                }
+            }
+        }
+
         // --- Stalker AI (Web Worker Offloaded) ---
         const distToPlayer = stalker.position.distanceTo(camera.position);
 
@@ -1752,11 +1912,47 @@ export default function HorrorGame() {
         }
 
         let finalPlayerPos = { x: camera.position.x, z: camera.position.z };
+        let currentStalkerSpeed = 1.5;
+
+        // Apply dynamic director modifiers
+        if (dScore.mode === 'absence') {
+             const awayDir = stalker.position.clone().sub(camera.position).normalize();
+             finalPlayerPos = { x: camera.position.x + awayDir.x * 40, z: camera.position.z + awayDir.z * 40 };
+             currentStalkerSpeed = 4.0;
+        } else if (dScore.mode === 'gaslight') {
+             if (distToPlayer < 15) {
+                  const awayDir = stalker.position.clone().sub(camera.position).normalize();
+                  finalPlayerPos = { x: camera.position.x + awayDir.x * 20, z: camera.position.z + awayDir.z * 20 };
+             } else {
+                  finalPlayerPos = { x: camera.position.x, z: camera.position.z };
+             }
+             currentStalkerSpeed = 2.0;
+
+             // Occasional gaslighting audio mimcry directly behind player
+             if (Math.random() < 0.005 && audioCtx && deceptionPanner && deceptionGain && deceptionNoise) {
+                 const fakePos = camera.position.clone().add(camForward.clone().multiplyScalar(-5));
+                 deceptionPanner.positionX.value = fakePos.x;
+                 deceptionPanner.positionY.value = fakePos.y;
+                 deceptionPanner.positionZ.value = fakePos.z;
+                 
+                 deceptionNoise.frequency.setValueAtTime(100 + Math.random()*200, audioCtx.currentTime);
+                 deceptionGain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                 deceptionGain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+             }
+        } else if (dScore.mode === 'ambush') {
+             // Route to player's predicted forward path
+             const expectedPath = camera.position.clone().add(camForward.clone().multiplyScalar(15));
+             finalPlayerPos = { x: expectedPath.x, z: expectedPath.z };
+             currentStalkerSpeed = 3.5;
+        } else if (dScore.mode === 'pursuit') {
+             finalPlayerPos = { x: camera.position.x, z: camera.position.z };
+             currentStalkerSpeed = 5.0;
+        }
+
+        // Overrides
         if (isHidden) {
-             // Stalker wanders locally instead of tracking player
              finalPlayerPos = { x: stalker.position.x + (Math.random()-0.5)*10, z: stalker.position.z + (Math.random()-0.5)*10 };
         } else if (lurePos) {
-             // Go to lure
              finalPlayerPos = lurePos;
         }
 
@@ -1770,10 +1966,11 @@ export default function HorrorGame() {
             if (distToPlayer > 1.2 || isHidden) {
                 // Use Web Worker result
                 const workerDir = new THREE.Vector3(aiState.dirX, 0, aiState.dirZ);
-                const stalkerSpeed = moveState.run ? 3.5 : 1.5;
+                const speedMult = moveState.run ? 1.2 : 1.0;
+                currentStalkerSpeed *= speedMult;
                 
                 if (aiState.dist > 0 && aiState.dist < 50) {
-                     const newStalkerPos = stalker.position.clone().add(workerDir.multiplyScalar(stalkerSpeed * delta));
+                     const newStalkerPos = stalker.position.clone().add(workerDir.multiplyScalar(currentStalkerSpeed * delta));
                      let stalkerBlocked = false;
                      
                      const sBox = new THREE.Box3().setFromCenterAndSize(
@@ -1790,14 +1987,14 @@ export default function HorrorGame() {
                      } else {
                          // Wall slide
                          const stalkerDirX = new THREE.Vector3(aiState.dirX, 0, 0).normalize();
-                         const newStalkerPosX = stalker.position.clone().add(stalkerDirX.multiplyScalar(stalkerSpeed * delta));
+                         const newStalkerPosX = stalker.position.clone().add(stalkerDirX.multiplyScalar(currentStalkerSpeed * delta));
                          let blockX = false;
                          const sxBox = new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(newStalkerPosX.x, 1.5, stalker.position.z), new THREE.Vector3(1, 4, 1));
                          for (let box of boundingBoxes) if(sxBox.intersectsBox(box)) blockX = true;
                          if(!blockX) stalker.position.x = newStalkerPosX.x;
                          else {
                              const stalkerDirZ = new THREE.Vector3(0, 0, aiState.dirZ).normalize();
-                             const newStalkerPosZ = stalker.position.clone().add(stalkerDirZ.multiplyScalar(stalkerSpeed * delta));
+                             const newStalkerPosZ = stalker.position.clone().add(stalkerDirZ.multiplyScalar(currentStalkerSpeed * delta));
                              let blockZ = false;
                              const szBox = new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(stalker.position.x, 1.5, newStalkerPosZ.z), new THREE.Vector3(1, 4, 1));
                              for (let box of boundingBoxes) if(szBox.intersectsBox(box)) blockZ = true;
@@ -1810,7 +2007,15 @@ export default function HorrorGame() {
                 
                 // Scale red light intensity by proximity
                 if (distToPlayer < 10) {
-                    stalkerLight.intensity = (10 - distToPlayer) * 20; 
+                    if (dScore.mode === 'ambush') {
+                        // In ambush, it turns off its light to stay completely hidden in the dark
+                        stalkerLight.intensity = Math.random() < 0.05 ? 100 : 0;
+                    } else if (dScore.mode === 'gaslight') {
+                        // Gaslighting flickers wildly
+                        stalkerLight.intensity = Math.random() * 200;
+                    } else {
+                        stalkerLight.intensity = (10 - distToPlayer) * 20; 
+                    }
                 } else {
                     stalkerLight.intensity = 0; 
                 }
@@ -1856,7 +2061,7 @@ export default function HorrorGame() {
           // Scale distortion intensity inversely with distance to stalker (starts at ~15 units)
           const distToStalker = camera.position.distanceTo(stalker.position);
           const intensity = Math.max(0, (15 - distToStalker) / 15);
-          dreadPass.uniforms["distortionIntensity"].value = intensity * 2.0; 
+          dreadPass.uniforms["distortionIntensity"].value = (intensity * 2.0) + (paranoiaRef.current * 1.5); 
           dreadPass.uniforms["flickerState"].value = flashLight.intensity > 150 ? 1.0 : 0.0;
       }
 
@@ -2036,7 +2241,9 @@ export default function HorrorGame() {
             className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-black/80 backdrop-blur-md text-white cursor-pointer pointer-events-auto"
             onClick={() => controlsRef.current?.lock()}
         >
-             <p className="text-3xl font-serif tracking-widest text-red-700">PAUSED</p>
+             <p className="text-3xl font-serif tracking-widest text-red-700 animate-pulse">
+                 {paranoiaRef.current > 0.8 ? "IT IS RIGHT BEHIND YOU" : paranoiaRef.current > 0.5 ? "UNSAFE" : "PAUSED"}
+             </p>
              <p className="text-gray-500 mt-6 font-mono text-sm tracking-widest">Click the screen to return</p>
         </div>
       )}
