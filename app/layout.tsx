@@ -41,7 +41,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} ${playfair.variable}`}>
+    <html suppressHydrationWarning lang="en" className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} ${playfair.variable}`}>
       <body suppressHydrationWarning className="font-sans text-white bg-black">{children}</body>
     </html>
   );

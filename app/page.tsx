@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 const HorrorGame = dynamic(() => import('@/components/HorrorGame'), {
   ssr: false,
@@ -9,7 +10,10 @@ const HorrorGame = dynamic(() => import('@/components/HorrorGame'), {
 export default function Home() {
   return (
     <main className="bg-black w-full h-screen overflow-hidden">
-      <HorrorGame />
+      <ErrorBoundary>
+        <HorrorGame />
+      </ErrorBoundary>
     </main>
   );
 }
+
