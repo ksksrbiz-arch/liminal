@@ -1,42 +1,53 @@
-import { NextResponse } from 'next/server';
+import { NextResponse } from "next/server";
+
+interface BugReport {
+  timestamp: string;
+  gameTimeElapsed: number;
+  reportDetails: string;
+  sanityLevel: number;
+  playerState: any;
+  userEmail: string;
+}
+
+// In-Memory store for preview session tracking
+const bugReports: BugReport[] = [];
 
 export async function POST(request: Request) {
   try {
-    const data = await request.json();
-    
-    // Log to server stdout with detailed formatting for developer inspection
-    console.info("============== GAME DIAGNOSTIC REPORT ==============");
-    console.info(`Timestamp:    ${data.timestamp || new Date().toISOString()}`);
-    console.info(`User Email:   ${data.email || 'anonymous'}`);
-    console.info(`Applet ID:    d9ecc9bf-7720-4492-ac2e-2eaba2709bd5`);
-    console.info(`Summary:      ${data.summary || 'Unspecified user report'}`);
-    console.info(`Browser UserAgent: ${data.userAgent || 'Unknown'}`);
-    console.info(`Device Details:    W: ${data.screenSize?.width || '?'}, H: ${data.screenSize?.height || '?'}, Ratio: ${data.screenSize?.pixelRatio || '?'}`);
-    console.info(`WebGL Specs:       ${JSON.stringify(data.webglCapabilities || {})}`);
-    console.info(`Game State:        Started: ${data.gameState?.isStarted}, Controls Locked: ${data.gameState?.isLocked}, Battery: ${data.gameState?.battery}%`);
-    console.info(`Error Context:     ${data.errorDetails || 'None explicitly provided'}`);
-    console.info(`Collected Logs Count: ${data.logs?.length || 0}`);
-    if (data.logs && data.logs.length > 0) {
-      console.info("--- Captured Client Logs Stack ---");
-      data.logs.slice(-15).forEach((log: any, idx: number) => {
-        console.info(`[${log.severity}] [${log.timestamp}] [${log.module || 'GENERIC'}] ${log.message}`);
-      });
-    }
-    console.info("====================================================");
+    const body = await request.json();
+    const { details, gameTimeElapsed, sanityLevel, playerState, userEmail } = body;
 
-    // In a real staging environment, this could also write to a local log store or database
-    
+    const newReport: BugReport = {
+      timestamp: new Date().toISOString(),
+      gameTimeElapsed: gameTimeElapsed || 0,
+      reportDetails: details || "No details provided",
+      sanityLevel: sanityLevel !== undefined ? sanityLevel : 100,
+      playerState: playerState || {},
+      userEmail: userEmail || "skagglegotu@gmail.com",
+    };
+
+    bugReports.push(newReport);
+
+    console.log("=== SERVER RECEIVED SECURE SYSTEM DIAGNOSTICS/BUG REPORT ===");
+    console.log(JSON.stringify(newReport, null, 2));
+
     return NextResponse.json({
       success: true,
-      diagnosticId: `ERR-SYS-${Math.floor(Math.random() * 899999 + 100000)}`,
-      timestamp: new Date().toISOString(),
-      message: "Diagnostic log compiled and dispatched to virtual engineering headquarters successfully."
+      message: "Diagnostics and security logs securely saved to terminal repository.",
+      reportCount: bugReports.length,
     });
-  } catch (error: any) {
-    console.error("[BUG REPORT CRITICAL ERROR] Failed to store incoming client report:", error);
-    return NextResponse.json({
-      success: false,
-      error: error.message || "Internal server-side error during log parsing and serialization"
-    }, { status: 500 });
+  } catch (err: any) {
+    return NextResponse.json(
+      { success: false, error: err.message || "Failed to submit diagnostics" },
+      { status: 500 }
+    );
   }
+}
+
+export async function GET() {
+  // Allow retrieve in sandbox environment to verify saving works
+  return NextResponse.json({
+    success: true,
+    reports: bugReports,
+  });
 }

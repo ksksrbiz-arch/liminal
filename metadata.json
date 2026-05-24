@@ -1,8 +1,6 @@
 {
-  "name": "Liminal: The Web Horror",
-  "description": "A psychological 3D horror experience running in the browser using Three.js.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
+  "name": "Horror Game",
+  "description": "An immersive audio-visual survival horror experience powered by adaptive AI atmospheric generation, local tracking, and high-performance game logic.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

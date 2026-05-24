@@ -1,48 +1,26 @@
-import type {Metadata} from 'next';
-import { Space_Grotesk, Playfair_Display, JetBrains_Mono } from 'next/font/google';
-import './globals.css';
-
-const spaceGrotesk = Space_Grotesk({
-  subsets: ['latin'],
-  variable: '--font-sans',
-});
-
-const jetbrainsMono =JetBrains_Mono({
-  subsets: ['latin'],
-  variable: '--font-mono',
-});
-
-const playfair = Playfair_Display({
-  subsets: ['latin'],
-  variable: '--font-serif',
-});
+import type { Metadata } from "next";
+import "./globals.css";
 
 export const metadata: Metadata = {
-  title: 'Liminal: The Web Horror',
-  description: 'A psychological 3D horror experience running in the browser.',
-  openGraph: {
-    title: 'Liminal: The Web Horror',
-    description: 'A psychological 3D horror experience running in the browser.',
-    images: [{
-      url: '/backdrop-reference.jpg',
-      width: 1200,
-      height: 630,
-      alt: 'Liminal Start Screen',
-    }],
-    type: 'website',
-  },
-  twitter: {
-    card: 'summary_large_image',
-    title: 'Liminal: The Web Horror',
-    description: 'A psychological 3D horror experience running in the browser.',
-    images: ['/backdrop-reference.jpg'],
-  },
+  title: "PARANOIAS - AI Tactical Horror Simulator",
+  description: "Can you survive the tactical bunker while avoiding the adaptive predator?",
 };
 
-export default function RootLayout({children}: {children: React.ReactNode}) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
-    <html suppressHydrationWarning lang="en" className={`${spaceGrotesk.variable} ${jetbrainsMono.variable} ${playfair.variable}`}>
-      <body suppressHydrationWarning className="font-sans text-white bg-black">{children}</body>
+    <html lang="en">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet" />
+      </head>
+      <body className="antialiased selection:bg-red-950 selection:text-red-200">
+        {children}
+      </body>
     </html>
   );
 }
